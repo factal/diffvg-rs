@@ -196,3 +196,133 @@ fn zero_paint(paint: &Paint) -> DPaint {
         }),
     }
 }
+
+/// diffvg-compatible path gradients with metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffvgPathGrad {
+    pub num_control_points: Vec<u8>,
+    pub points: Vec<Vec2>,
+    pub thickness: Option<Vec<f32>>,
+    pub is_closed: bool,
+    pub use_distance_approx: bool,
+}
+
+/// diffvg-compatible shape geometry gradients.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiffvgShapeGeometry {
+    Circle { center: Vec2, radius: f32 },
+    Ellipse { center: Vec2, radius: Vec2 },
+    Rect { min: Vec2, max: Vec2 },
+    Path { path: DiffvgPathGrad },
+}
+
+/// diffvg-compatible shape gradients (includes per-shape transform for diffvg-rs).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffvgShapeGrad {
+    pub geometry: DiffvgShapeGeometry,
+    pub transform: Mat3,
+    pub stroke_width: f32,
+}
+
+/// diffvg-compatible shape group gradients.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffvgShapeGroupGrad {
+    pub shape_to_canvas: Mat3,
+    pub fill: Option<DPaint>,
+    pub stroke: Option<DPaint>,
+}
+
+/// diffvg-compatible scene gradient layout (for bindings/ABI parity).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffvgSceneGrad {
+    pub shapes: Vec<DiffvgShapeGrad>,
+    pub shape_groups: Vec<DiffvgShapeGroupGrad>,
+    pub filter: DFilter,
+    pub background: Color,
+    pub background_image: Option<Vec<f32>>,
+    pub translation: Option<Vec<f32>>,
+}
+
+impl SceneGrad {
+    /// Convert gradients into a diffvg-compatible layout (with path metadata).
+    pub fn to_diffvg_layout(&self, scene: &Scene) -> DiffvgSceneGrad {
+        let mut shapes = Vec::with_capacity(self.shapes.len());
+        for (idx, d_shape) in self.shapes.iter().enumerate() {
+            let scene_shape = scene.shapes.get(idx);
+            let geometry = match (&d_shape.geometry, scene_shape.map(|s| &s.geometry)) {
+                (DShapeGeometry::Circle { center, radius }, _) => {
+                    DiffvgShapeGeometry::Circle { center: *center, radius: *radius }
+                }
+                (DShapeGeometry::Ellipse { center, radius }, _) => {
+                    DiffvgShapeGeometry::Ellipse { center: *center, radius: *radius }
+                }
+                (DShapeGeometry::Rect { min, max }, _) => {
+                    DiffvgShapeGeometry::Rect { min: *min, max: *max }
+                }
+                (DShapeGeometry::Path { points, thickness }, Some(ShapeGeometry::Path { path })) => {
+                    let mut out_points = vec![Vec2::ZERO; path.points.len()];
+                    for (dst, src) in out_points.iter_mut().zip(points.iter()) {
+                        *dst = *src;
+                    }
+                    let out_thickness = match (thickness, path.thickness.as_ref()) {
+                        (Some(values), Some(src)) => {
+                            let mut out = vec![0.0f32; src.len()];
+                            for (dst, val) in out.iter_mut().zip(values.iter()) {
+                                *dst = *val;
+                            }
+                            Some(out)
+                        }
+                        (Some(values), None) => Some(values.clone()),
+                        (None, Some(src)) => Some(vec![0.0f32; src.len()]),
+                        (None, None) => None,
+                    };
+                    DiffvgShapeGeometry::Path {
+                        path: DiffvgPathGrad {
+                            num_control_points: path.num_control_points.clone(),
+                            points: out_points,
+                            thickness: out_thickness,
+                            is_closed: path.is_closed,
+                            use_distance_approx: path.use_distance_approx,
+                        },
+                    }
+                }
+                (DShapeGeometry::Path { points, thickness }, _) => {
+                    DiffvgShapeGeometry::Path {
+                        path: DiffvgPathGrad {
+                            num_control_points: Vec::new(),
+                            points: points.clone(),
+                            thickness: thickness.clone(),
+                            is_closed: false,
+                            use_distance_approx: false,
+                        },
+                    }
+                }
+            };
+
+            shapes.push(DiffvgShapeGrad {
+                geometry,
+                transform: d_shape.transform,
+                stroke_width: d_shape.stroke_width,
+            });
+        }
+
+        let shape_groups = self
+            .shape_groups
+            .iter()
+            .map(|group| DiffvgShapeGroupGrad {
+                shape_to_canvas: group.shape_to_canvas,
+                fill: group.fill.clone(),
+                stroke: group.stroke.clone(),
+            })
+            .collect();
+
+        DiffvgSceneGrad {
+            shapes,
+            shape_groups,
+            filter: self.filter,
+            background: self.background,
+            background_image: self.background_image.clone(),
+            translation: self.translation.clone(),
+        }
+    }
+}

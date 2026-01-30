@@ -555,6 +555,25 @@ impl Renderer {
         )
     }
 
+    /// Backward pass for SDF values evaluated at arbitrary positions.
+    pub fn eval_positions_backward(
+        &self,
+        scene: &Scene,
+        positions: &[Vec2],
+        options: RenderOptions,
+        backward_options: BackwardOptions,
+        d_sdf_values: Option<&[f32]>,
+    ) -> Result<SceneGrad, RenderError> {
+        let _ = self;
+        crate::backward::render_backward_positions(
+            scene,
+            options,
+            backward_options,
+            positions,
+            d_sdf_values,
+        )
+    }
+
     /// Render a signed distance field for the scene.
     pub fn render_sdf(&self, scene: &Scene, options: RenderOptions) -> Result<SdfImage, RenderError> {
         if scene.width == 0 || scene.height == 0 {

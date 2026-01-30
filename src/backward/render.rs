@@ -199,3 +199,73 @@ pub fn render_backward(
 
     Ok(grads)
 }
+
+/// Backward pass for SDF values evaluated at arbitrary positions.
+pub fn render_backward_positions(
+    scene: &Scene,
+    options: RenderOptions,
+    backward_options: BackwardOptions,
+    eval_positions: &[Vec2],
+    d_sdf_image: Option<&[f32]>,
+) -> Result<SceneGrad, RenderError> {
+    if let Some(d_sdf) = d_sdf_image {
+        if d_sdf.len() != eval_positions.len() {
+            return Err(RenderError::InvalidScene(
+                "d_sdf_image size mismatch for eval_positions",
+            ));
+        }
+    }
+
+    let mut grads = SceneGrad::zeros_from_scene(scene, false, backward_options.compute_translation);
+    if eval_positions.is_empty() {
+        return Ok(grads);
+    }
+
+    let Some(d_sdf) = d_sdf_image else {
+        return Ok(grads);
+    };
+
+    let bvh = SceneBvh::new(scene);
+    let dist_options = DistanceOptions {
+        path_tolerance: options.path_tolerance,
+    };
+
+    for (idx, &pt) in eval_positions.iter().enumerate() {
+        let d_dist = d_sdf[idx];
+        if d_dist == 0.0 {
+            continue;
+        }
+        let translation_index = if backward_options.compute_translation {
+            translation_index_for_point(scene, pt)
+        } else {
+            None
+        };
+        sample_distance(
+            scene,
+            &bvh,
+            pt,
+            1.0,
+            d_dist,
+            &mut grads,
+            translation_index,
+            dist_options,
+        );
+    }
+
+    Ok(grads)
+}
+
+fn translation_index_for_point(scene: &Scene, pt: Vec2) -> Option<usize> {
+    let x = pt.x as i32;
+    let y = pt.y as i32;
+    if x < 0 || y < 0 {
+        return None;
+    }
+    let width = scene.width as i32;
+    let height = scene.height as i32;
+    if x >= width || y >= height {
+        return None;
+    }
+    let idx = (y as usize) * (scene.width as usize) + (x as usize);
+    Some(idx)
+}
