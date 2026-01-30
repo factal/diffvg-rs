@@ -1,0 +1,201 @@
+use crate::distance::{DistanceOptions, SceneBvh};
+use crate::grad::SceneGrad;
+use crate::math::{Vec2, Vec4};
+use crate::renderer::rng::Pcg32;
+use crate::scene::Scene;
+use crate::{RenderError, RenderOptions};
+
+use super::background::{finalize_background_gradients, sample_background};
+use super::boundary::boundary_sampling;
+use super::filters::{accumulate_filter_gradient, build_weight_image, gather_d_color};
+use super::sampling::{sample_color, sample_color_prefiltered, sample_distance};
+
+#[derive(Debug, Copy, Clone)]
+pub struct BackwardOptions {
+    pub compute_translation: bool,
+}
+
+impl Default for BackwardOptions {
+    fn default() -> Self {
+        Self {
+            compute_translation: false,
+        }
+    }
+}
+
+pub fn render_backward(
+    scene: &Scene,
+    options: RenderOptions,
+    backward_options: BackwardOptions,
+    d_render_image: Option<&[f32]>,
+    d_sdf_image: Option<&[f32]>,
+) -> Result<SceneGrad, RenderError> {
+    let width = scene.width as usize;
+    let height = scene.height as usize;
+    let pixel_count = width.saturating_mul(height);
+    if let Some(d_render) = d_render_image {
+        if d_render.len() != pixel_count.saturating_mul(4) {
+            return Err(RenderError::InvalidScene("d_render_image size mismatch"));
+        }
+    }
+    if let Some(d_sdf) = d_sdf_image {
+        if d_sdf.len() != pixel_count {
+            return Err(RenderError::InvalidScene("d_sdf_image size mismatch"));
+        }
+    }
+
+    let include_background_image = d_render_image.is_some() && scene.background_image.is_some();
+    let mut grads = SceneGrad::zeros_from_scene(
+        scene,
+        include_background_image,
+        backward_options.compute_translation,
+    );
+
+    if scene.width == 0 || scene.height == 0 {
+        return Ok(grads);
+    }
+
+    let samples_x = options.samples_x.max(1);
+    let samples_y = options.samples_y.max(1);
+    let num_samples = (samples_x as usize) * (samples_y as usize);
+    let total_samples = pixel_count
+        .saturating_mul(samples_x as usize)
+        .saturating_mul(samples_y as usize);
+
+    let bvh = SceneBvh::new(scene);
+    let dist_options = DistanceOptions {
+        path_tolerance: options.path_tolerance,
+    };
+
+    let use_prefiltering = options.use_prefiltering;
+    let use_jitter = options.jitter && !use_prefiltering;
+
+    let weight_image = if d_render_image.is_some() {
+        Some(build_weight_image(
+            scene,
+            samples_x,
+            samples_y,
+            options.seed,
+            use_prefiltering,
+            use_jitter,
+        ))
+    } else {
+        None
+    };
+
+    for idx in 0..total_samples {
+        let sx = idx % samples_x as usize;
+        let sy = (idx / samples_x as usize) % samples_y as usize;
+        let x = (idx / (samples_x as usize * samples_y as usize)) % width;
+        let y = idx / (samples_x as usize * samples_y as usize * width);
+
+        let mut rx = 0.5f32;
+        let mut ry = 0.5f32;
+        if use_jitter {
+            let mut rng = Pcg32::new(idx as u64, options.seed as u64);
+            rx = rng.next_f32();
+            ry = rng.next_f32();
+        }
+        let px = x as f32 + (sx as f32 + rx) / samples_x as f32;
+        let py = y as f32 + (sy as f32 + ry) / samples_y as f32;
+        let pt = Vec2::new(px, py);
+        let npt = Vec2::new(px / scene.width as f32, py / scene.height as f32);
+
+        let pixel_index = y * width + x;
+        let background = sample_background(scene, pixel_index);
+
+        if let Some(d_render) = d_render_image {
+            let mut d_color = Vec4::ZERO;
+            if let Some(weight_image) = weight_image.as_ref() {
+                d_color = gather_d_color(
+                    scene.filter.filter_type,
+                    scene.filter.radius,
+                    d_render,
+                    weight_image,
+                    scene.width as i32,
+                    scene.height as i32,
+                    pt,
+                );
+            }
+
+            let color = if use_prefiltering {
+                sample_color_prefiltered(
+                    scene,
+                    &bvh,
+                    npt,
+                    Some(background),
+                    Some(d_color),
+                    &mut grads,
+                    backward_options.compute_translation.then_some(pixel_index),
+                    pixel_index,
+                    dist_options,
+                )
+            } else {
+                sample_color(
+                    scene,
+                    &bvh,
+                    npt,
+                    Some(background),
+                    Some(d_color),
+                    None,
+                    &mut grads,
+                    backward_options.compute_translation.then_some(pixel_index),
+                    pixel_index,
+                )
+            };
+
+            if let Some(weight_image) = weight_image.as_ref() {
+                accumulate_filter_gradient(
+                    scene.filter.filter_type,
+                    scene.filter.radius,
+                    &color,
+                    d_render,
+                    weight_image,
+                    scene.width as i32,
+                    scene.height as i32,
+                    pt,
+                    &mut grads.filter,
+                );
+            }
+        }
+
+        if let Some(d_sdf) = d_sdf_image {
+            let d_dist = d_sdf[pixel_index];
+            let weight = if num_samples > 0 {
+                1.0 / num_samples as f32
+            } else {
+                1.0
+            };
+            sample_distance(
+                scene,
+                &bvh,
+                pt,
+                weight,
+                d_dist,
+                &mut grads,
+                backward_options.compute_translation.then_some(pixel_index),
+                dist_options,
+            );
+        }
+    }
+
+    if !use_prefiltering && d_render_image.is_some() {
+        if let Some(weight_image) = weight_image.as_ref() {
+            boundary_sampling(
+                scene,
+                &bvh,
+                samples_x,
+                samples_y,
+                options.seed,
+                d_render_image.unwrap(),
+                weight_image,
+                &mut grads,
+                backward_options.compute_translation,
+            );
+        }
+    }
+
+    finalize_background_gradients(scene, &mut grads);
+
+    Ok(grads)
+}
