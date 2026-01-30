@@ -8,6 +8,7 @@ mod distance;
 mod geometry;
 mod gpu;
 mod math;
+mod path_utils;
 mod renderer;
 mod scene;
 
