@@ -1,5 +1,8 @@
+//! Scene graph types for diffvg-rs.
+
 use crate::{color::Color, geometry::Path, math::Mat3, math::Vec2};
 
+/// Reconstruction filter types used for prefiltering.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FilterType {
     Box,
@@ -19,6 +22,7 @@ impl FilterType {
     }
 }
 
+/// Reconstruction filter configuration.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Filter {
     pub filter_type: FilterType,
@@ -31,6 +35,7 @@ impl Filter {
     }
 }
 
+/// Fill rule for shape groups.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FillRule {
     NonZero,
@@ -46,6 +51,7 @@ impl FillRule {
     }
 }
 
+/// Stroke join style used for path stroking.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StrokeJoin {
     Miter,
@@ -63,6 +69,7 @@ impl StrokeJoin {
     }
 }
 
+/// Stroke end-cap style.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StrokeCap {
     Butt,
@@ -80,12 +87,14 @@ impl StrokeCap {
     }
 }
 
+/// A gradient stop with a normalized offset in [0, 1].
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct GradientStop {
     pub offset: f32,
     pub color: Color,
 }
 
+/// Linear gradient definition in canvas space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinearGradient {
     pub start: Vec2,
@@ -93,6 +102,7 @@ pub struct LinearGradient {
     pub stops: Vec<GradientStop>,
 }
 
+/// Radial gradient definition in canvas space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RadialGradient {
     pub center: Vec2,
@@ -100,6 +110,7 @@ pub struct RadialGradient {
     pub stops: Vec<GradientStop>,
 }
 
+/// Paint definition for fills and strokes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Paint {
     Solid(Color),
@@ -107,6 +118,7 @@ pub enum Paint {
     RadialGradient(RadialGradient),
 }
 
+/// Shape geometry variants supported by diffvg-rs.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShapeGeometry {
     Circle { center: Vec2, radius: f32 },
@@ -115,6 +127,7 @@ pub enum ShapeGeometry {
     Path { path: Path },
 }
 
+/// Renderable shape with local transform and stroke settings.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shape {
     pub geometry: ShapeGeometry,
@@ -126,6 +139,7 @@ pub struct Shape {
 }
 
 impl Shape {
+    /// Construct a shape with default transform and stroke settings.
     pub fn new(geometry: ShapeGeometry) -> Self {
         Self {
             geometry,
@@ -138,6 +152,7 @@ impl Shape {
     }
 }
 
+/// A group of shapes sharing fill/stroke paints and a group transform.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShapeGroup {
     pub shape_indices: Vec<usize>,
@@ -150,6 +165,7 @@ pub struct ShapeGroup {
 }
 
 impl ShapeGroup {
+    /// Construct a shape group with default opacity and transforms.
     pub fn new(shape_indices: Vec<usize>, fill: Option<Paint>, stroke: Option<Paint>) -> Self {
         Self {
             shape_indices,
@@ -162,17 +178,20 @@ impl ShapeGroup {
         }
     }
 
+    /// Set shape-to-canvas transform and update its inverse.
     pub fn set_shape_to_canvas(&mut self, shape_to_canvas: Mat3) {
         self.shape_to_canvas = shape_to_canvas;
         self.canvas_to_shape = shape_to_canvas.inverse().unwrap_or(Mat3::identity());
     }
 
+    /// Set canvas-to-shape transform and update its inverse.
     pub fn set_canvas_to_shape(&mut self, canvas_to_shape: Mat3) {
         self.canvas_to_shape = canvas_to_shape;
         self.shape_to_canvas = canvas_to_shape.inverse().unwrap_or(Mat3::identity());
     }
 }
 
+/// Root scene container for rendering.
 #[derive(Debug, Clone)]
 pub struct Scene {
     pub width: u32,
@@ -185,6 +204,7 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Construct an empty scene with a default box filter.
     pub fn new(width: u32, height: u32) -> Self {
         Self {
             width,

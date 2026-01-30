@@ -1,3 +1,5 @@
+//! GPU kernels for diffvg-rs rendering and distance evaluation.
+
 use cubecl::prelude::*;
 
 const SHAPE_STRIDE: u32 = 15;
@@ -7,7 +9,10 @@ const CURVE_STRIDE: u32 = 13;
 const GRADIENT_STRIDE: u32 = 8;
 const XFORM_STRIDE: u32 = 6;
 const BOUNDS_STRIDE: u32 = 4;
-const TILE_ENTRY_STRIDE: u32 = 2;
+const TILE_ENTRY_STRIDE: u32 = 1;
+const BVH_NODE_STRIDE: u32 = 4;
+const BVH_META_STRIDE: u32 = 4;
+const BVH_NONE: u32 = 0xffff_ffffu32;
 
 const SHAPE_KIND_CIRCLE: u32 = 0;
 const SHAPE_KIND_RECT: u32 = 1;
@@ -33,6 +38,7 @@ const PCG_MULT_HI: u32 = 0x5851f42d;
 const PCG_INIT_LO: u32 = 0x748fea9b;
 const PCG_INIT_HI: u32 = 0x853c49e6;
 
+/// Accumulate filter weights per sample using fixed-point atomics.
 #[cube(launch_unchecked)]
 pub(crate) fn rasterize_weights(
     width: u32,
@@ -70,6 +76,7 @@ pub(crate) fn rasterize_weights(
     let mut rx = half;
     let mut ry = half;
     if jitter != 0 {
+        // PCG-based jitter for stratified sampling.
         let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
         let rng = pcg32_init(canonical_idx, seed);
         let mut state_lo = rng[0];
@@ -113,6 +120,7 @@ pub(crate) fn rasterize_weights(
     }
 }
 
+/// Render samples into a splat buffer using tile binning.
 #[cube(launch_unchecked)]
 pub(crate) fn rasterize_splat(
     shape_data: &Array<f32>,
@@ -121,14 +129,23 @@ pub(crate) fn rasterize_splat(
     group_data: &Array<f32>,
     group_xform: &Array<f32>,
     group_inv_scale: &Array<f32>,
-    _group_shapes: &Array<f32>,
+    group_shapes: &Array<f32>,
     shape_xform: &Array<f32>,
     curve_data: &Array<f32>,
     gradient_data: &Array<f32>,
     stop_offsets: &Array<f32>,
     stop_colors: &Array<f32>,
+    group_bvh_bounds: &Array<f32>,
+    group_bvh_nodes: &Array<u32>,
+    group_bvh_indices: &Array<u32>,
+    group_bvh_meta: &Array<u32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
     tile_offsets: &Array<u32>,
     tile_entries: &Array<u32>,
+    tile_order: &Array<u32>,
     tile_count_x: u32,
     tile_count_y: u32,
     tile_size: u32,
@@ -170,8 +187,9 @@ pub(crate) fn rasterize_splat(
     }
 
     let idx_u32 = idx as u32;
-    let tile_id = idx_u32 / tile_samples;
-    let local_idx = idx_u32 - tile_id * tile_samples;
+    let tile_slot = idx_u32 / tile_samples;
+    let local_idx = idx_u32 - tile_slot * tile_samples;
+    let tile_id = tile_order[tile_slot as usize];
     let pixel_index = local_idx / samples_per_pixel;
     let sample_index = local_idx - pixel_index * samples_per_pixel;
 
@@ -196,6 +214,7 @@ pub(crate) fn rasterize_splat(
     let mut rx = half;
     let mut ry = half;
     if jitter != 0 {
+        // Deterministic jitter per sample for reproducible rendering.
         let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
         let rng = pcg32_init(canonical_idx, seed);
         let mut state_lo = rng[0];
@@ -232,11 +251,20 @@ pub(crate) fn rasterize_splat(
         group_data,
         group_xform,
         group_inv_scale,
+        group_shapes,
         shape_xform,
         curve_data,
         gradient_data,
         stop_offsets,
         stop_colors,
+        group_bvh_bounds,
+        group_bvh_nodes,
+        group_bvh_indices,
+        group_bvh_meta,
+        path_bvh_bounds,
+        path_bvh_nodes,
+        path_bvh_indices,
+        path_bvh_meta,
         tile_offsets,
         tile_entries,
         tile_id,
@@ -284,6 +312,7 @@ pub(crate) fn rasterize_splat(
     }
 }
 
+/// Resolve fixed-point splat buffers into the final RGBA output.
 #[cube(launch_unchecked)]
 pub(crate) fn resolve_splat(
     weight_accum: &Array<Atomic<u32>>,
@@ -327,6 +356,7 @@ pub(crate) fn resolve_splat(
     output[out + 3] = a;
 }
 
+/// Resolve float splat buffers into the final RGBA output.
 #[cube(launch_unchecked)]
 pub(crate) fn resolve_splat_f32(
     weight_accum: &Array<Atomic<f32>>,
@@ -369,6 +399,7 @@ pub(crate) fn resolve_splat_f32(
     output[out + 3] = a;
 }
 
+// 64-bit integer helpers for PCG in the shader environment.
 #[cube]
 fn mul32_full(a: u32, b: u32) -> Line<u32> {
     let mask = u32::new(0xffff);
@@ -540,6 +571,7 @@ fn blend_group(
     let big = f32::new(1.0e20);
     let use_prefiltering = use_prefiltering != u32::new(0);
 
+    // Stroke is composited before fill within the same group.
     if stroke_kind != PAINT_NONE {
         let mut coverage = zero;
         if use_prefiltering {
@@ -591,6 +623,10 @@ fn accumulate_shape_fill(
     shape_data: &Array<f32>,
     segment_data: &Array<f32>,
     curve_data: &Array<f32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
     shape_index: u32,
     fill_rule: u32,
     px: f32,
@@ -601,6 +637,7 @@ fn accumulate_shape_fill(
 ) {
     let zero = f32::new(0.0);
     let one = f32::new(1.0);
+    let big = f32::new(1.0e20);
     let base = (shape_index * SHAPE_STRIDE) as usize;
     let kind = shape_data[base] as u32;
     let seg_offset = shape_data[base + 1] as u32;
@@ -671,76 +708,45 @@ fn accumulate_shape_fill(
             }
         }
     } else if kind == SHAPE_KIND_PATH {
-        if curve_count > 0 {
-            for s in 0..curve_count {
-                let seg_base = ((curve_offset + s) * CURVE_STRIDE) as usize;
-                let seg_kind = curve_data[seg_base] as u32;
-                let x0 = curve_data[seg_base + 1];
-                let y0 = curve_data[seg_base + 2];
-                let x1 = curve_data[seg_base + 3];
-                let y1 = curve_data[seg_base + 4];
-                let x2 = curve_data[seg_base + 5];
-                let y2 = curve_data[seg_base + 6];
-                let x3 = curve_data[seg_base + 7];
-                let y3 = curve_data[seg_base + 8];
-
-                let dist = if seg_kind == 0 {
-                    distance_to_segment(px, py, x0, y0, x1, y1)
-                } else if seg_kind == 1 {
-                    distance_to_quadratic(px, py, x0, y0, x1, y1, x2, y2, use_distance_approx)
-                } else {
-                    distance_to_cubic(px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx)
-                };
-                if dist < *min_dist {
-                    *min_dist = dist;
-                }
-
-                if seg_kind == 0 {
-                    winding_and_crossings_line(
-                        px,
-                        py,
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        fill_rule,
-                        winding,
-                        crossings,
-                    );
-                } else if seg_kind == 1 {
-                    winding_and_crossings_quadratic(
-                        px,
-                        py,
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        fill_rule,
-                        winding,
-                        crossings,
-                    );
-                } else {
-                    winding_and_crossings_cubic(
-                        px,
-                        py,
-                        x0,
-                        y0,
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        x3,
-                        y3,
-                        fill_rule,
-                        winding,
-                        crossings,
-                    );
-                }
-            }
+        let meta_base = (shape_index * BVH_META_STRIDE) as usize;
+        let node_count = path_bvh_meta[meta_base + 1];
+        let mut local_min = big;
+        let mut local_winding = zero;
+        let mut local_crossings = zero;
+        if node_count > u32::new(0) {
+            let node_offset = path_bvh_meta[meta_base];
+            let index_offset = path_bvh_meta[meta_base + 2];
+            accumulate_path_fill_bvh(
+                curve_data,
+                path_bvh_bounds,
+                path_bvh_nodes,
+                path_bvh_indices,
+                node_offset,
+                index_offset,
+                px,
+                py,
+                fill_rule,
+                use_distance_approx,
+                &mut local_min,
+                &mut local_winding,
+                &mut local_crossings,
+            );
+        } else if curve_count > 0 {
+            accumulate_path_fill_full(
+                curve_data,
+                curve_offset,
+                curve_count,
+                px,
+                py,
+                fill_rule,
+                use_distance_approx,
+                &mut local_min,
+                &mut local_winding,
+                &mut local_crossings,
+            );
         } else if seg_count > 0 {
-            for s in 0..seg_count {
+            let mut s = u32::new(0);
+            while s < seg_count {
                 let seg_base = ((seg_offset + s) * SEGMENT_STRIDE) as usize;
                 let x0 = segment_data[seg_base];
                 let y0 = segment_data[seg_base + 1];
@@ -761,7 +767,18 @@ fn accumulate_shape_fill(
                     winding,
                     crossings,
                 );
+                s += u32::new(1);
             }
+        }
+        if local_min < *min_dist {
+            *min_dist = local_min;
+        }
+        if fill_rule == u32::new(1) {
+            if local_crossings > zero {
+                *crossings = one - *crossings;
+            }
+        } else {
+            *winding += local_winding;
         }
     }
 }
@@ -771,6 +788,10 @@ fn accumulate_shape_stroke(
     shape_data: &Array<f32>,
     segment_data: &Array<f32>,
     curve_data: &Array<f32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
     shape_index: u32,
     px: f32,
     py: f32,
@@ -781,6 +802,7 @@ fn accumulate_shape_stroke(
 ) {
     let zero = f32::new(0.0);
     let one = f32::new(1.0);
+    let big = f32::new(1.0e20);
     let base = (shape_index * SHAPE_STRIDE) as usize;
     let kind = shape_data[base] as u32;
     let seg_offset = shape_data[base + 1] as u32;
@@ -844,83 +866,506 @@ fn accumulate_shape_stroke(
                 *hit = one;
             }
         } else if kind == SHAPE_KIND_PATH {
-            if curve_count > 0 {
-                for s in 0..curve_count {
-                let seg_base = ((curve_offset + s) * CURVE_STRIDE) as usize;
-                let seg_kind = curve_data[seg_base] as u32;
-                let x0 = curve_data[seg_base + 1];
-                let y0 = curve_data[seg_base + 2];
-                let x1 = curve_data[seg_base + 3];
-                let y1 = curve_data[seg_base + 4];
-                let x2 = curve_data[seg_base + 5];
-                let y2 = curve_data[seg_base + 6];
-                let x3 = curve_data[seg_base + 7];
-                let y3 = curve_data[seg_base + 8];
-                let r0 = curve_data[seg_base + 9];
-                let r1 = curve_data[seg_base + 10];
-                let r2 = curve_data[seg_base + 11];
-                let r3 = curve_data[seg_base + 12];
-
-                let dist_t = if seg_kind == 0 {
-                    distance_to_segment_with_t(px, py, x0, y0, x1, y1)
-                } else if seg_kind == 1 {
-                    closest_point_quadratic_with_t(
-                        px, py, x0, y0, x1, y1, x2, y2, use_distance_approx,
-                    )
-                } else {
-                    closest_point_cubic_with_t(
-                        px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx,
-                    )
-                };
-                let dist = dist_t[0];
-                let t = dist_t[1];
-                let radius = if seg_kind == 0 {
-                    r0 + t * (r1 - r0)
-                } else if seg_kind == 1 {
-                    let tt = one - t;
-                    tt * tt * r0 + f32::new(2.0) * tt * t * r1 + t * t * r2
-                } else {
-                    let tt = one - t;
-                    tt * tt * tt * r0
-                        + f32::new(3.0) * tt * tt * t * r1
-                        + f32::new(3.0) * tt * t * t * r2
-                        + t * t * t * r3
-                };
-
-                if use_prefiltering != u32::new(0) {
-                    if dist < *min_dist {
-                        *min_dist = dist;
-                        *min_radius = radius;
-                    }
-                    } else if dist < radius {
-                        *hit = one;
-                    }
-                }
+            let meta_base = (shape_index * BVH_META_STRIDE) as usize;
+            let node_count = path_bvh_meta[meta_base + 1];
+            let mut local_min = big;
+            let mut local_radius = zero;
+            let mut local_hit = zero;
+            if node_count > u32::new(0) {
+                let node_offset = path_bvh_meta[meta_base];
+                let index_offset = path_bvh_meta[meta_base + 2];
+                accumulate_path_stroke_bvh(
+                    curve_data,
+                    path_bvh_bounds,
+                    path_bvh_nodes,
+                    path_bvh_indices,
+                    node_offset,
+                    index_offset,
+                    px,
+                    py,
+                    use_distance_approx,
+                    use_prefiltering,
+                    &mut local_min,
+                    &mut local_radius,
+                    &mut local_hit,
+                );
+            } else if curve_count > 0 {
+                accumulate_path_stroke_full(
+                    curve_data,
+                    curve_offset,
+                    curve_count,
+                    px,
+                    py,
+                    use_distance_approx,
+                    use_prefiltering,
+                    &mut local_min,
+                    &mut local_radius,
+                    &mut local_hit,
+                );
             } else if seg_count > 0 {
-                for s in 0..seg_count {
-                let seg_base = ((seg_offset + s) * SEGMENT_STRIDE) as usize;
-                let x0 = segment_data[seg_base];
-                let y0 = segment_data[seg_base + 1];
-                let x1 = segment_data[seg_base + 2];
-                let y1 = segment_data[seg_base + 3];
-                let r0 = segment_data[seg_base + 4];
-                let r1 = segment_data[seg_base + 5];
+                let mut s = u32::new(0);
+                while s < seg_count {
+                    let seg_base = ((seg_offset + s) * SEGMENT_STRIDE) as usize;
+                    let x0 = segment_data[seg_base];
+                    let y0 = segment_data[seg_base + 1];
+                    let x1 = segment_data[seg_base + 2];
+                    let y1 = segment_data[seg_base + 3];
+                    let r0 = segment_data[seg_base + 4];
+                    let r1 = segment_data[seg_base + 5];
 
-                let dist_t = distance_to_segment_with_t(px, py, x0, y0, x1, y1);
-                let dist = dist_t[0];
-                let t = dist_t[1];
-                let radius = r0 + t * (r1 - r0);
+                    let dist_t = distance_to_segment_with_t(px, py, x0, y0, x1, y1);
+                    let dist = dist_t[0];
+                    let t = dist_t[1];
+                    let radius = r0 + t * (r1 - r0);
 
-                if use_prefiltering != u32::new(0) {
-                    if dist < *min_dist {
-                        *min_dist = dist;
-                        *min_radius = radius;
-                    }
+                    if use_prefiltering != u32::new(0) {
+                        if dist < *min_dist {
+                            *min_dist = dist;
+                            *min_radius = radius;
+                        }
                     } else if dist < radius {
                         *hit = one;
                     }
+                    s += u32::new(1);
                 }
             }
+            if use_prefiltering != u32::new(0) {
+                if local_min < *min_dist {
+                    *min_dist = local_min;
+                    *min_radius = local_radius;
+                }
+            } else if local_hit > zero {
+                *hit = one;
+            }
+        }
+    }
+}
+
+#[cube]
+fn bounds_distance(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> f32 {
+    let zero = f32::new(0.0);
+    let dx = max_f32(max_f32(min_x - px, zero), px - max_x);
+    let dy = max_f32(max_f32(min_y - py, zero), py - max_y);
+    (dx * dx + dy * dy).sqrt()
+}
+
+#[cube]
+fn bounds_contains(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> bool {
+    px >= min_x && px <= max_x && py >= min_y && py <= max_y
+}
+
+#[cube]
+fn ray_intersects_bounds(_min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> bool {
+    !(py < min_y || py > max_y || px > max_x)
+}
+
+#[cube]
+fn accumulate_path_fill_full(
+    curve_data: &Array<f32>,
+    curve_offset: u32,
+    curve_count: u32,
+    px: f32,
+    py: f32,
+    fill_rule: u32,
+    use_distance_approx: bool,
+    min_dist: &mut f32,
+    winding: &mut f32,
+    crossings: &mut f32,
+) {
+    let mut s = u32::new(0);
+    while s < curve_count {
+        let seg_base = ((curve_offset + s) * CURVE_STRIDE) as usize;
+        let seg_kind = curve_data[seg_base] as u32;
+        let x0 = curve_data[seg_base + 1];
+        let y0 = curve_data[seg_base + 2];
+        let x1 = curve_data[seg_base + 3];
+        let y1 = curve_data[seg_base + 4];
+        let x2 = curve_data[seg_base + 5];
+        let y2 = curve_data[seg_base + 6];
+        let x3 = curve_data[seg_base + 7];
+        let y3 = curve_data[seg_base + 8];
+
+        let dist = if seg_kind == 0 {
+            distance_to_segment(px, py, x0, y0, x1, y1)
+        } else if seg_kind == 1 {
+            distance_to_quadratic(px, py, x0, y0, x1, y1, x2, y2, use_distance_approx)
+        } else {
+            distance_to_cubic(px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx)
+        };
+        if dist < *min_dist {
+            *min_dist = dist;
+        }
+
+        if seg_kind == 0 {
+            winding_and_crossings_line(
+                px,
+                py,
+                x0,
+                y0,
+                x1,
+                y1,
+                fill_rule,
+                winding,
+                crossings,
+            );
+        } else if seg_kind == 1 {
+            winding_and_crossings_quadratic(
+                px,
+                py,
+                x0,
+                y0,
+                x1,
+                y1,
+                x2,
+                y2,
+                fill_rule,
+                winding,
+                crossings,
+            );
+        } else {
+            winding_and_crossings_cubic(
+                px,
+                py,
+                x0,
+                y0,
+                x1,
+                y1,
+                x2,
+                y2,
+                x3,
+                y3,
+                fill_rule,
+                winding,
+                crossings,
+            );
+        }
+        s += u32::new(1);
+    }
+}
+
+#[cube]
+fn accumulate_path_stroke_full(
+    curve_data: &Array<f32>,
+    curve_offset: u32,
+    curve_count: u32,
+    px: f32,
+    py: f32,
+    use_distance_approx: bool,
+    use_prefiltering: u32,
+    min_dist: &mut f32,
+    min_radius: &mut f32,
+    hit: &mut f32,
+) {
+    let one = f32::new(1.0);
+    let mut done = u32::new(0);
+    let mut s = u32::new(0);
+    while s < curve_count {
+        if done == u32::new(0) {
+            let seg_base = ((curve_offset + s) * CURVE_STRIDE) as usize;
+            let seg_kind = curve_data[seg_base] as u32;
+            let x0 = curve_data[seg_base + 1];
+            let y0 = curve_data[seg_base + 2];
+            let x1 = curve_data[seg_base + 3];
+            let y1 = curve_data[seg_base + 4];
+            let x2 = curve_data[seg_base + 5];
+            let y2 = curve_data[seg_base + 6];
+            let x3 = curve_data[seg_base + 7];
+            let y3 = curve_data[seg_base + 8];
+            let r0 = curve_data[seg_base + 9];
+            let r1 = curve_data[seg_base + 10];
+            let r2 = curve_data[seg_base + 11];
+            let r3 = curve_data[seg_base + 12];
+
+            let dist_t = if seg_kind == 0 {
+                distance_to_segment_with_t(px, py, x0, y0, x1, y1)
+            } else if seg_kind == 1 {
+                closest_point_quadratic_with_t(
+                    px, py, x0, y0, x1, y1, x2, y2, use_distance_approx,
+                )
+            } else {
+                closest_point_cubic_with_t(
+                    px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx,
+                )
+            };
+            let dist = dist_t[0];
+            let t = dist_t[1];
+            let radius = if seg_kind == 0 {
+                r0 + t * (r1 - r0)
+            } else if seg_kind == 1 {
+                let tt = one - t;
+                tt * tt * r0 + f32::new(2.0) * tt * t * r1 + t * t * r2
+            } else {
+                let tt = one - t;
+                tt * tt * tt * r0
+                    + f32::new(3.0) * tt * tt * t * r1
+                    + f32::new(3.0) * tt * t * t * r2
+                    + t * t * t * r3
+            };
+
+            if use_prefiltering != u32::new(0) {
+                if dist < *min_dist {
+                    *min_dist = dist;
+                    *min_radius = radius;
+                }
+            } else if dist < radius {
+                *hit = one;
+                done = u32::new(1);
+            }
+        }
+        s += u32::new(1);
+    }
+}
+
+#[cube]
+fn accumulate_path_fill_bvh(
+    curve_data: &Array<f32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    node_offset: u32,
+    index_offset: u32,
+    px: f32,
+    py: f32,
+    fill_rule: u32,
+    use_distance_approx: bool,
+    min_dist: &mut f32,
+    winding: &mut f32,
+    crossings: &mut f32,
+) {
+    let mut node_id = u32::new(0);
+    while node_id != BVH_NONE {
+        let node_base = ((node_offset + node_id) * BVH_NODE_STRIDE) as usize;
+        let min_x = path_bvh_bounds[node_base];
+        let min_y = path_bvh_bounds[node_base + 1];
+        let max_x = path_bvh_bounds[node_base + 2];
+        let max_y = path_bvh_bounds[node_base + 3];
+        let dist = bounds_distance(min_x, min_y, max_x, max_y, px, py);
+        if dist <= *min_dist {
+            let left = path_bvh_nodes[node_base];
+            let skip = path_bvh_nodes[node_base + 1];
+            let start = path_bvh_nodes[node_base + 2];
+            let count = path_bvh_nodes[node_base + 3];
+            if count > u32::new(0) {
+                let mut i = u32::new(0);
+                while i < count {
+                    let seg_index = path_bvh_indices[(index_offset + start + i) as usize];
+                    let seg_base = (seg_index * CURVE_STRIDE) as usize;
+                    let seg_kind = curve_data[seg_base] as u32;
+                    let x0 = curve_data[seg_base + 1];
+                    let y0 = curve_data[seg_base + 2];
+                    let x1 = curve_data[seg_base + 3];
+                    let y1 = curve_data[seg_base + 4];
+                    let x2 = curve_data[seg_base + 5];
+                    let y2 = curve_data[seg_base + 6];
+                    let x3 = curve_data[seg_base + 7];
+                    let y3 = curve_data[seg_base + 8];
+                    let seg_dist = if seg_kind == 0 {
+                        distance_to_segment(px, py, x0, y0, x1, y1)
+                    } else if seg_kind == 1 {
+                        distance_to_quadratic(px, py, x0, y0, x1, y1, x2, y2, use_distance_approx)
+                    } else {
+                        distance_to_cubic(px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx)
+                    };
+                    if seg_dist < *min_dist {
+                        *min_dist = seg_dist;
+                    }
+                    i += u32::new(1);
+                }
+                node_id = skip;
+            } else {
+                node_id = left;
+            }
+        } else {
+            let skip = path_bvh_nodes[node_base + 1];
+            node_id = skip;
+        }
+    }
+    node_id = u32::new(0);
+    while node_id != BVH_NONE {
+        let node_base = ((node_offset + node_id) * BVH_NODE_STRIDE) as usize;
+        let min_x = path_bvh_bounds[node_base];
+        let min_y = path_bvh_bounds[node_base + 1];
+        let max_x = path_bvh_bounds[node_base + 2];
+        let max_y = path_bvh_bounds[node_base + 3];
+        if ray_intersects_bounds(min_x, min_y, max_x, max_y, px, py) {
+            let left = path_bvh_nodes[node_base];
+            let skip = path_bvh_nodes[node_base + 1];
+            let start = path_bvh_nodes[node_base + 2];
+            let count = path_bvh_nodes[node_base + 3];
+            if count > u32::new(0) {
+                let mut i = u32::new(0);
+                while i < count {
+                    let seg_index = path_bvh_indices[(index_offset + start + i) as usize];
+                    let seg_base = (seg_index * CURVE_STRIDE) as usize;
+                    let seg_kind = curve_data[seg_base] as u32;
+                    let x0 = curve_data[seg_base + 1];
+                    let y0 = curve_data[seg_base + 2];
+                    let x1 = curve_data[seg_base + 3];
+                    let y1 = curve_data[seg_base + 4];
+                    let x2 = curve_data[seg_base + 5];
+                    let y2 = curve_data[seg_base + 6];
+                    let x3 = curve_data[seg_base + 7];
+                    let y3 = curve_data[seg_base + 8];
+                    if seg_kind == 0 {
+                        winding_and_crossings_line(
+                            px,
+                            py,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            fill_rule,
+                            winding,
+                            crossings,
+                        );
+                    } else if seg_kind == 1 {
+                        winding_and_crossings_quadratic(
+                            px,
+                            py,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            fill_rule,
+                            winding,
+                            crossings,
+                        );
+                    } else {
+                        winding_and_crossings_cubic(
+                            px,
+                            py,
+                            x0,
+                            y0,
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            x3,
+                            y3,
+                            fill_rule,
+                            winding,
+                            crossings,
+                        );
+                    }
+                    i += u32::new(1);
+                }
+                node_id = skip;
+            } else {
+                node_id = left;
+            }
+        } else {
+            let skip = path_bvh_nodes[node_base + 1];
+            node_id = skip;
+        }
+    }
+}
+
+#[cube]
+fn accumulate_path_stroke_bvh(
+    curve_data: &Array<f32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    node_offset: u32,
+    index_offset: u32,
+    px: f32,
+    py: f32,
+    use_distance_approx: bool,
+    use_prefiltering: u32,
+    min_dist: &mut f32,
+    min_radius: &mut f32,
+    hit: &mut f32,
+) {
+    let zero = f32::new(0.0);
+    let one = f32::new(1.0);
+    let mut node_id = u32::new(0);
+    let mut done = u32::new(0);
+    while node_id != BVH_NONE && done == u32::new(0) {
+        let node_base = ((node_offset + node_id) * BVH_NODE_STRIDE) as usize;
+        let min_x = path_bvh_bounds[node_base];
+        let min_y = path_bvh_bounds[node_base + 1];
+        let max_x = path_bvh_bounds[node_base + 2];
+        let max_y = path_bvh_bounds[node_base + 3];
+        let mut intersects = u32::new(1);
+        if use_prefiltering != u32::new(0) {
+            if bounds_distance(min_x, min_y, max_x, max_y, px, py) > *min_dist {
+                intersects = u32::new(0);
+            }
+        } else if !bounds_contains(min_x, min_y, max_x, max_y, px, py) {
+            intersects = u32::new(0);
+        }
+        let skip = path_bvh_nodes[node_base + 1];
+        if intersects != u32::new(0) {
+            let left = path_bvh_nodes[node_base];
+            let start = path_bvh_nodes[node_base + 2];
+            let count = path_bvh_nodes[node_base + 3];
+            if count > u32::new(0) {
+                let mut i = u32::new(0);
+                while i < count {
+                    if done == u32::new(0) {
+                        let seg_index = path_bvh_indices[(index_offset + start + i) as usize];
+                        let seg_base = (seg_index * CURVE_STRIDE) as usize;
+                        let seg_kind = curve_data[seg_base] as u32;
+                        let x0 = curve_data[seg_base + 1];
+                        let y0 = curve_data[seg_base + 2];
+                        let x1 = curve_data[seg_base + 3];
+                        let y1 = curve_data[seg_base + 4];
+                        let x2 = curve_data[seg_base + 5];
+                        let y2 = curve_data[seg_base + 6];
+                        let x3 = curve_data[seg_base + 7];
+                        let y3 = curve_data[seg_base + 8];
+                        let r0 = curve_data[seg_base + 9];
+                        let r1 = curve_data[seg_base + 10];
+                        let r2 = curve_data[seg_base + 11];
+                        let r3 = curve_data[seg_base + 12];
+                        let dist_t = if seg_kind == 0 {
+                            distance_to_segment_with_t(px, py, x0, y0, x1, y1)
+                        } else if seg_kind == 1 {
+                            closest_point_quadratic_with_t(
+                                px, py, x0, y0, x1, y1, x2, y2, use_distance_approx,
+                            )
+                        } else {
+                            closest_point_cubic_with_t(
+                                px, py, x0, y0, x1, y1, x2, y2, x3, y3, use_distance_approx,
+                            )
+                        };
+                        let dist = dist_t[0];
+                        let t = dist_t[1];
+                        let radius = if seg_kind == 0 {
+                            r0 + t * (r1 - r0)
+                        } else if seg_kind == 1 {
+                            let tt = one - t;
+                            tt * tt * r0 + f32::new(2.0) * tt * t * r1 + t * t * r2
+                        } else {
+                            let tt = one - t;
+                            tt * tt * tt * r0
+                                + f32::new(3.0) * tt * tt * t * r1
+                                + f32::new(3.0) * tt * t * t * r2
+                                + t * t * t * r3
+                        };
+                        if use_prefiltering != u32::new(0) {
+                            if dist < *min_dist {
+                                *min_dist = dist;
+                                *min_radius = radius;
+                            }
+                        } else if dist < radius {
+                            *hit = one;
+                            done = u32::new(1);
+                        }
+                    }
+                    i += u32::new(1);
+                }
+                node_id = skip;
+            } else {
+                node_id = left;
+            }
+        } else {
+            node_id = skip;
+        }
+        if use_prefiltering == u32::new(0) && *hit > zero {
+            done = u32::new(1);
         }
     }
 }
@@ -933,11 +1378,20 @@ fn eval_scene_tiled(
     group_data: &Array<f32>,
     group_xform: &Array<f32>,
     group_inv_scale: &Array<f32>,
+    group_shapes: &Array<f32>,
     shape_xform: &Array<f32>,
     curve_data: &Array<f32>,
     gradient_data: &Array<f32>,
     stop_offsets: &Array<f32>,
     stop_colors: &Array<f32>,
+    group_bvh_bounds: &Array<f32>,
+    group_bvh_nodes: &Array<u32>,
+    group_bvh_indices: &Array<u32>,
+    group_bvh_meta: &Array<u32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
     tile_offsets: &Array<u32>,
     tile_entries: &Array<u32>,
     tile_id: u32,
@@ -962,162 +1416,95 @@ fn eval_scene_tiled(
     let start = tile_offsets[tile_id as usize];
     let end = tile_offsets[(tile_id + 1) as usize];
 
-    let invalid = u32::new(0xffff_ffffu32 as i64);
-    let mut cached_group = invalid;
-    let mut group_scale = one;
-    let mut fill_kind = u32::new(0);
-    let mut stroke_kind = u32::new(0);
-    let mut fill_rule = u32::new(0);
-    let mut local_px = px;
-    let mut local_py = py;
-    let mut fill_color = Line::empty(4usize);
-    let mut stroke_color = Line::empty(4usize);
-    let mut fill_min_dist = big;
-    let mut fill_winding = zero;
-    let mut fill_crossings = zero;
-    let mut stroke_min_dist = big;
-    let mut stroke_min_radius = zero;
-    let mut stroke_hit = zero;
-
-    for entry in start..end {
+    let mut entry = start;
+    while entry < end {
         let base = (entry * TILE_ENTRY_STRIDE) as usize;
         let group_id = tile_entries[base];
-        let shape_index = tile_entries[base + 1];
+        let group_base = (group_id * GROUP_STRIDE) as usize;
+        let fill_kind = group_data[group_base + 2] as u32;
+        let stroke_kind = group_data[group_base + 4] as u32;
+        let fill_index = group_data[group_base + 3] as u32;
+        let stroke_index = group_data[group_base + 5] as u32;
+        let fill_rule = group_data[group_base + 7] as u32;
 
-        if group_id != cached_group {
-            if cached_group != invalid {
-                let scaled_fill_dist = fill_min_dist * group_scale;
-                let scaled_stroke_dist = stroke_min_dist * group_scale;
-                let scaled_stroke_radius = stroke_min_radius * group_scale;
-                blend_group(
-                    &mut out,
-                    fill_kind,
-                    stroke_kind,
-                    fill_rule,
-                    fill_color,
-                    stroke_color,
-                    scaled_fill_dist,
-                    fill_winding,
-                    fill_crossings,
-                    scaled_stroke_dist,
-                    scaled_stroke_radius,
-                    stroke_hit,
-                    use_prefiltering,
-                );
-            }
+        let xform_base = (group_id * XFORM_STRIDE) as usize;
+        let local_px = group_xform[xform_base] * px
+            + group_xform[xform_base + 1] * py
+            + group_xform[xform_base + 2];
+        let local_py = group_xform[xform_base + 3] * px
+            + group_xform[xform_base + 4] * py
+            + group_xform[xform_base + 5];
+        let inv_scale = group_inv_scale[group_id as usize];
+        let group_scale = if inv_scale > zero { one / inv_scale } else { one };
 
-            cached_group = group_id;
-            let group_base = (group_id * GROUP_STRIDE) as usize;
-            fill_kind = group_data[group_base + 2] as u32;
-            stroke_kind = group_data[group_base + 4] as u32;
-            let fill_index = group_data[group_base + 3] as u32;
-            let stroke_index = group_data[group_base + 5] as u32;
-            fill_rule = group_data[group_base + 7] as u32;
+        let fill_color = paint_color(
+            fill_kind,
+            fill_index,
+            group_data[group_base + 8],
+            group_data[group_base + 9],
+            group_data[group_base + 10],
+            group_data[group_base + 11],
+            gradient_data,
+            stop_offsets,
+            stop_colors,
+            px,
+            py,
+        );
 
-            let xform_base = (group_id * XFORM_STRIDE) as usize;
-            local_px = group_xform[xform_base] * px
-                + group_xform[xform_base + 1] * py
-                + group_xform[xform_base + 2];
-            local_py = group_xform[xform_base + 3] * px
-                + group_xform[xform_base + 4] * py
-                + group_xform[xform_base + 5];
-            let inv_scale = group_inv_scale[group_id as usize];
-            if inv_scale > zero {
-                group_scale = one / inv_scale;
-            } else {
-                group_scale = one;
-            }
+        let stroke_color = paint_color(
+            stroke_kind,
+            stroke_index,
+            group_data[group_base + 12],
+            group_data[group_base + 13],
+            group_data[group_base + 14],
+            group_data[group_base + 15],
+            gradient_data,
+            stop_offsets,
+            stop_colors,
+            px,
+            py,
+        );
 
-            fill_color = paint_color(
+        let mut fill_min_dist = big;
+        let mut fill_winding = zero;
+        let mut fill_crossings = zero;
+        let mut stroke_min_dist = big;
+        let mut stroke_min_radius = zero;
+        let mut stroke_hit = zero;
+
+        if fill_kind != PAINT_NONE || stroke_kind != PAINT_NONE {
+            accumulate_group_shapes(
+                shape_data,
+                segment_data,
+                shape_bounds,
+                group_data,
+                group_shapes,
+                shape_xform,
+                curve_data,
+                group_id,
+                local_px,
+                local_py,
                 fill_kind,
-                fill_index,
-                group_data[group_base + 8],
-                group_data[group_base + 9],
-                group_data[group_base + 10],
-                group_data[group_base + 11],
-                gradient_data,
-                stop_offsets,
-                stop_colors,
-                px,
-                py,
-            );
-
-            stroke_color = paint_color(
                 stroke_kind,
-                stroke_index,
-                group_data[group_base + 12],
-                group_data[group_base + 13],
-                group_data[group_base + 14],
-                group_data[group_base + 15],
-                gradient_data,
-                stop_offsets,
-                stop_colors,
-                px,
-                py,
+                fill_rule,
+                use_prefiltering,
+                group_bvh_bounds,
+                group_bvh_nodes,
+                group_bvh_indices,
+                group_bvh_meta,
+                path_bvh_bounds,
+                path_bvh_nodes,
+                path_bvh_indices,
+                path_bvh_meta,
+                &mut fill_min_dist,
+                &mut fill_winding,
+                &mut fill_crossings,
+                &mut stroke_min_dist,
+                &mut stroke_min_radius,
+                &mut stroke_hit,
             );
-
-            fill_min_dist = big;
-            fill_winding = zero;
-            fill_crossings = zero;
-            stroke_min_dist = big;
-            stroke_min_radius = zero;
-            stroke_hit = zero;
         }
 
-        let bounds_base = (shape_index * BOUNDS_STRIDE) as usize;
-        let min_x = shape_bounds[bounds_base];
-        let min_y = shape_bounds[bounds_base + 1];
-        let max_x = shape_bounds[bounds_base + 2];
-        let max_y = shape_bounds[bounds_base + 3];
-        let mut in_bounds = min_x <= max_x && min_y <= max_y;
-        if in_bounds {
-            if local_px < min_x || local_px > max_x || local_py < min_y || local_py > max_y {
-                in_bounds = false;
-            }
-        }
-
-        if in_bounds {
-            let shape_xform_base = (shape_index * XFORM_STRIDE) as usize;
-            let shape_px = shape_xform[shape_xform_base] * local_px
-                + shape_xform[shape_xform_base + 1] * local_py
-                + shape_xform[shape_xform_base + 2];
-            let shape_py = shape_xform[shape_xform_base + 3] * local_px
-                + shape_xform[shape_xform_base + 4] * local_py
-                + shape_xform[shape_xform_base + 5];
-
-            if fill_kind != PAINT_NONE {
-                accumulate_shape_fill(
-                    shape_data,
-                    segment_data,
-                    curve_data,
-                    shape_index,
-                    fill_rule,
-                    shape_px,
-                    shape_py,
-                    &mut fill_min_dist,
-                    &mut fill_winding,
-                    &mut fill_crossings,
-                );
-            }
-
-            if stroke_kind != PAINT_NONE {
-                accumulate_shape_stroke(
-                    shape_data,
-                    segment_data,
-                    curve_data,
-                    shape_index,
-                    shape_px,
-                    shape_py,
-                    use_prefiltering,
-                    &mut stroke_min_dist,
-                    &mut stroke_min_radius,
-                    &mut stroke_hit,
-                );
-            }
-        }
-    }
-
-    if cached_group != invalid {
         let scaled_fill_dist = fill_min_dist * group_scale;
         let scaled_stroke_dist = stroke_min_dist * group_scale;
         let scaled_stroke_radius = stroke_min_radius * group_scale;
@@ -1136,9 +1523,220 @@ fn eval_scene_tiled(
             stroke_hit,
             use_prefiltering,
         );
+
+        entry += u32::new(1);
     }
 
     out
+}
+
+#[cube]
+fn accumulate_group_shapes(
+    shape_data: &Array<f32>,
+    segment_data: &Array<f32>,
+    shape_bounds: &Array<f32>,
+    group_data: &Array<f32>,
+    group_shapes: &Array<f32>,
+    shape_xform: &Array<f32>,
+    curve_data: &Array<f32>,
+    group_id: u32,
+    local_px: f32,
+    local_py: f32,
+    fill_kind: u32,
+    stroke_kind: u32,
+    fill_rule: u32,
+    use_prefiltering: u32,
+    group_bvh_bounds: &Array<f32>,
+    group_bvh_nodes: &Array<u32>,
+    group_bvh_indices: &Array<u32>,
+    group_bvh_meta: &Array<u32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
+    fill_min_dist: &mut f32,
+    fill_winding: &mut f32,
+    fill_crossings: &mut f32,
+    stroke_min_dist: &mut f32,
+    stroke_min_radius: &mut f32,
+    stroke_hit: &mut f32,
+) {
+    let meta_base = (group_id * BVH_META_STRIDE) as usize;
+    let node_offset = group_bvh_meta[meta_base];
+    let node_count = group_bvh_meta[meta_base + 1];
+    let index_offset = group_bvh_meta[meta_base + 2];
+    let index_count = group_bvh_meta[meta_base + 3];
+
+    if node_count > u32::new(0) && index_count > u32::new(0) {
+        let mut node_id = u32::new(0);
+        while node_id != BVH_NONE {
+            let node_base = ((node_offset + node_id) * BVH_NODE_STRIDE) as usize;
+            let min_x = group_bvh_bounds[node_base];
+            let min_y = group_bvh_bounds[node_base + 1];
+            let max_x = group_bvh_bounds[node_base + 2];
+            let max_y = group_bvh_bounds[node_base + 3];
+            let skip = group_bvh_nodes[node_base + 1];
+            if !(local_px < min_x || local_px > max_x || local_py < min_y || local_py > max_y) {
+                let left = group_bvh_nodes[node_base];
+                let start = group_bvh_nodes[node_base + 2];
+                let count = group_bvh_nodes[node_base + 3];
+                if count > u32::new(0) {
+                    let mut i = u32::new(0);
+                    while i < count {
+                        let shape_index = group_bvh_indices[(index_offset + start + i) as usize];
+                        accumulate_shape_in_group(
+                            shape_data,
+                            segment_data,
+                            shape_bounds,
+                            shape_xform,
+                            curve_data,
+                            path_bvh_bounds,
+                            path_bvh_nodes,
+                            path_bvh_indices,
+                            path_bvh_meta,
+                            shape_index,
+                            local_px,
+                            local_py,
+                            fill_kind,
+                            stroke_kind,
+                            fill_rule,
+                            use_prefiltering,
+                            fill_min_dist,
+                            fill_winding,
+                            fill_crossings,
+                            stroke_min_dist,
+                            stroke_min_radius,
+                            stroke_hit,
+                        );
+                        i += u32::new(1);
+                    }
+                    node_id = skip;
+                } else {
+                    node_id = left;
+                }
+            } else {
+                node_id = skip;
+            }
+        }
+    } else {
+        let group_base = (group_id * GROUP_STRIDE) as usize;
+        let shape_offset = group_data[group_base] as u32;
+        let shape_count = group_data[group_base + 1] as u32;
+        let mut i = u32::new(0);
+        while i < shape_count {
+            let shape_index = group_shapes[(shape_offset + i) as usize] as u32;
+            accumulate_shape_in_group(
+                shape_data,
+                segment_data,
+                shape_bounds,
+                shape_xform,
+                curve_data,
+                path_bvh_bounds,
+                path_bvh_nodes,
+                path_bvh_indices,
+                path_bvh_meta,
+                shape_index,
+                local_px,
+                local_py,
+                fill_kind,
+                stroke_kind,
+                fill_rule,
+                use_prefiltering,
+                fill_min_dist,
+                fill_winding,
+                fill_crossings,
+                stroke_min_dist,
+                stroke_min_radius,
+                stroke_hit,
+            );
+            i += u32::new(1);
+        }
+    }
+}
+
+#[cube]
+fn accumulate_shape_in_group(
+    shape_data: &Array<f32>,
+    segment_data: &Array<f32>,
+    shape_bounds: &Array<f32>,
+    shape_xform: &Array<f32>,
+    curve_data: &Array<f32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
+    shape_index: u32,
+    local_px: f32,
+    local_py: f32,
+    fill_kind: u32,
+    stroke_kind: u32,
+    fill_rule: u32,
+    use_prefiltering: u32,
+    fill_min_dist: &mut f32,
+    fill_winding: &mut f32,
+    fill_crossings: &mut f32,
+    stroke_min_dist: &mut f32,
+    stroke_min_radius: &mut f32,
+    stroke_hit: &mut f32,
+) {
+    let bounds_base = (shape_index * BOUNDS_STRIDE) as usize;
+    let min_x = shape_bounds[bounds_base];
+    let min_y = shape_bounds[bounds_base + 1];
+    let max_x = shape_bounds[bounds_base + 2];
+    let max_y = shape_bounds[bounds_base + 3];
+    let mut in_bounds = min_x <= max_x && min_y <= max_y;
+    if in_bounds {
+        if local_px < min_x || local_px > max_x || local_py < min_y || local_py > max_y {
+            in_bounds = false;
+        }
+    }
+    if in_bounds {
+        let shape_xform_base = (shape_index * XFORM_STRIDE) as usize;
+        let shape_px = shape_xform[shape_xform_base] * local_px
+            + shape_xform[shape_xform_base + 1] * local_py
+            + shape_xform[shape_xform_base + 2];
+        let shape_py = shape_xform[shape_xform_base + 3] * local_px
+            + shape_xform[shape_xform_base + 4] * local_py
+            + shape_xform[shape_xform_base + 5];
+
+        if fill_kind != PAINT_NONE {
+            accumulate_shape_fill(
+                shape_data,
+                segment_data,
+                curve_data,
+                path_bvh_bounds,
+                path_bvh_nodes,
+                path_bvh_indices,
+                path_bvh_meta,
+                shape_index,
+                fill_rule,
+                shape_px,
+                shape_py,
+                fill_min_dist,
+                fill_winding,
+                fill_crossings,
+            );
+        }
+
+        if stroke_kind != PAINT_NONE {
+            accumulate_shape_stroke(
+                shape_data,
+                segment_data,
+                curve_data,
+                path_bvh_bounds,
+                path_bvh_nodes,
+                path_bvh_indices,
+                path_bvh_meta,
+                shape_index,
+                shape_px,
+                shape_py,
+                use_prefiltering,
+                stroke_min_dist,
+                stroke_min_radius,
+                stroke_hit,
+            );
+        }
+    }
 }
 
 #[cube]
@@ -1238,7 +1836,9 @@ fn sample_gradient(
             color_a = stop_colors[cbase + 3];
             found = one;
         } else {
-            for i in 0..(stop_count - 1) {
+            let mut i = u32::new(0);
+            let stop_last = stop_count - 1;
+            while i < stop_last {
                 let curr = stop_offsets[(stop_offset + i) as usize];
                 let next = stop_offsets[(stop_offset + i + 1) as usize];
                 if t >= curr && t < next && found == zero {
@@ -1251,6 +1851,7 @@ fn sample_gradient(
                     color_a = stop_colors[c0 + 3] * (one - tt) + stop_colors[c1 + 3] * tt;
                     found = one;
                 }
+                i += u32::new(1);
             }
         }
 
@@ -1908,6 +2509,7 @@ fn winding_and_crossings_line(
     }
 }
 
+/// Float-atomic variant of weight accumulation.
 #[cube(launch_unchecked)]
 pub(crate) fn rasterize_weights_f32(
     width: u32,
@@ -1984,10 +2586,9 @@ pub(crate) fn rasterize_weights_f32(
 }
 #[cube(launch_unchecked)]
 pub(crate) fn bin_tiles_count(
-    shape_bounds: &Array<f32>,
-    group_shape_pairs: &Array<u32>,
+    group_bounds: &Array<f32>,
     group_shape_xform: &Array<f32>,
-    num_pairs: u32,
+    num_groups: u32,
     tile_count_x: u32,
     tile_count_y: u32,
     tile_size: u32,
@@ -1996,19 +2597,17 @@ pub(crate) fn bin_tiles_count(
     tile_counts: &mut Array<Atomic<u32>>,
 ) {
     let idx = ABSOLUTE_POS;
-    if idx >= num_pairs as usize {
+    if idx >= num_groups as usize {
         terminate!();
     }
 
-    let base = (idx as u32 * u32::new(2)) as usize;
-    let group_id = group_shape_pairs[base];
-    let shape_index = group_shape_pairs[base + 1];
+    let group_id = idx as u32;
 
-    let bounds_base = (shape_index * BOUNDS_STRIDE) as usize;
-    let min_x = shape_bounds[bounds_base];
-    let min_y = shape_bounds[bounds_base + 1];
-    let max_x = shape_bounds[bounds_base + 2];
-    let max_y = shape_bounds[bounds_base + 3];
+    let bounds_base = (group_id * BOUNDS_STRIDE) as usize;
+    let min_x = group_bounds[bounds_base];
+    let min_y = group_bounds[bounds_base + 1];
+    let max_x = group_bounds[bounds_base + 2];
+    let max_y = group_bounds[bounds_base + 3];
 
     let mut valid = min_x <= max_x && min_y <= max_y;
     if tile_count_x == u32::new(0) || tile_count_y == u32::new(0) {
@@ -2090,6 +2689,7 @@ pub(crate) fn bin_tiles_count(
     }
 }
 
+/// Float-atomic variant of the splat renderer.
 #[cube(launch_unchecked)]
 pub(crate) fn rasterize_splat_f32(
     shape_data: &Array<f32>,
@@ -2098,14 +2698,23 @@ pub(crate) fn rasterize_splat_f32(
     group_data: &Array<f32>,
     group_xform: &Array<f32>,
     group_inv_scale: &Array<f32>,
-    _group_shapes: &Array<f32>,
+    group_shapes: &Array<f32>,
     shape_xform: &Array<f32>,
     curve_data: &Array<f32>,
     gradient_data: &Array<f32>,
     stop_offsets: &Array<f32>,
     stop_colors: &Array<f32>,
+    group_bvh_bounds: &Array<f32>,
+    group_bvh_nodes: &Array<u32>,
+    group_bvh_indices: &Array<u32>,
+    group_bvh_meta: &Array<u32>,
+    path_bvh_bounds: &Array<f32>,
+    path_bvh_nodes: &Array<u32>,
+    path_bvh_indices: &Array<u32>,
+    path_bvh_meta: &Array<u32>,
     tile_offsets: &Array<u32>,
     tile_entries: &Array<u32>,
+    tile_order: &Array<u32>,
     tile_count_x: u32,
     tile_count_y: u32,
     tile_size: u32,
@@ -2147,8 +2756,9 @@ pub(crate) fn rasterize_splat_f32(
     }
 
     let idx_u32 = idx as u32;
-    let tile_id = idx_u32 / tile_samples;
-    let local_idx = idx_u32 - tile_id * tile_samples;
+    let tile_slot = idx_u32 / tile_samples;
+    let local_idx = idx_u32 - tile_slot * tile_samples;
+    let tile_id = tile_order[tile_slot as usize];
     let pixel_index = local_idx / samples_per_pixel;
     let sample_index = local_idx - pixel_index * samples_per_pixel;
 
@@ -2209,11 +2819,20 @@ pub(crate) fn rasterize_splat_f32(
         group_data,
         group_xform,
         group_inv_scale,
+        group_shapes,
         shape_xform,
         curve_data,
         gradient_data,
         stop_offsets,
         stop_colors,
+        group_bvh_bounds,
+        group_bvh_nodes,
+        group_bvh_indices,
+        group_bvh_meta,
+        path_bvh_bounds,
+        path_bvh_nodes,
+        path_bvh_indices,
+        path_bvh_meta,
         tile_offsets,
         tile_entries,
         tile_id,
@@ -2293,11 +2912,24 @@ pub(crate) fn scan_tile_offsets(
 }
 
 #[cube(launch_unchecked)]
+pub(crate) fn init_tile_cursor(
+    tile_offsets: &Array<u32>,
+    num_tiles: u32,
+    tile_cursor: &mut Array<Atomic<u32>>,
+) {
+    let idx = ABSOLUTE_POS;
+    if idx >= num_tiles as usize {
+        terminate!();
+    }
+    let value = tile_offsets[idx];
+    tile_cursor[idx].fetch_add(value);
+}
+
+#[cube(launch_unchecked)]
 pub(crate) fn bin_tiles_write(
-    shape_bounds: &Array<f32>,
-    group_shape_pairs: &Array<u32>,
+    group_bounds: &Array<f32>,
     group_shape_xform: &Array<f32>,
-    num_pairs: u32,
+    num_groups: u32,
     tile_count_x: u32,
     tile_count_y: u32,
     tile_size: u32,
@@ -2307,19 +2939,17 @@ pub(crate) fn bin_tiles_write(
     tile_entries: &mut Array<u32>,
 ) {
     let idx = ABSOLUTE_POS;
-    if idx >= num_pairs as usize {
+    if idx >= num_groups as usize {
         terminate!();
     }
 
-    let base = (idx as u32 * u32::new(2)) as usize;
-    let group_id = group_shape_pairs[base];
-    let shape_index = group_shape_pairs[base + 1];
+    let group_id = idx as u32;
 
-    let bounds_base = (shape_index * BOUNDS_STRIDE) as usize;
-    let min_x = shape_bounds[bounds_base];
-    let min_y = shape_bounds[bounds_base + 1];
-    let max_x = shape_bounds[bounds_base + 2];
-    let max_y = shape_bounds[bounds_base + 3];
+    let bounds_base = (group_id * BOUNDS_STRIDE) as usize;
+    let min_x = group_bounds[bounds_base];
+    let min_y = group_bounds[bounds_base + 1];
+    let max_x = group_bounds[bounds_base + 2];
+    let max_y = group_bounds[bounds_base + 3];
 
     let mut valid = min_x <= max_x && min_y <= max_y;
     if tile_count_x == u32::new(0) || tile_count_y == u32::new(0) {
@@ -2394,13 +3024,45 @@ pub(crate) fn bin_tiles_write(
                     for tx in min_tx..=max_tx {
                         let tile_id = (row + tx) as usize;
                         let entry_index = tile_cursor[tile_id].fetch_add(u32::new(1));
-                        let base = (entry_index * u32::new(2)) as usize;
+                        let base = (entry_index * TILE_ENTRY_STRIDE) as usize;
                         tile_entries[base] = group_id;
-                        tile_entries[base + 1] = shape_index;
                     }
                 }
             }
         }
+    }
+}
+
+#[cube(launch_unchecked)]
+pub(crate) fn sort_tile_entries(
+    tile_offsets: &Array<u32>,
+    tile_entries: &mut Array<u32>,
+    num_tiles: u32,
+) {
+    let tile_id = ABSOLUTE_POS;
+    if tile_id >= num_tiles as usize {
+        terminate!();
+    }
+    let start = tile_offsets[tile_id];
+    let end = tile_offsets[tile_id + 1];
+    let one = u32::new(1);
+    if end <= start + one {
+        terminate!();
+    }
+    let mut i = start + one;
+    while i < end {
+        let key = tile_entries[i as usize];
+        let mut j = i;
+        while j > start {
+            let prev = tile_entries[(j - one) as usize];
+            if prev <= key {
+                break;
+            }
+            tile_entries[j as usize] = prev;
+            j -= one;
+        }
+        tile_entries[j as usize] = key;
+        i += one;
     }
 }
 
@@ -2426,7 +3088,8 @@ fn winding_and_crossings_quadratic(
     let cy = y0 - py;
     let roots = solve_quadratic(ay, by, cy);
     let count = roots[0] as u32;
-    for i in 0..count {
+    let mut i = u32::new(0);
+    while i < count {
         let t = roots[(i + 1) as usize];
         if t >= zero && t <= one {
             let tt = one - t;
@@ -2441,6 +3104,7 @@ fn winding_and_crossings_quadratic(
                 }
             }
         }
+        i += u32::new(1);
     }
 }
 
@@ -2468,7 +3132,8 @@ fn winding_and_crossings_cubic(
     let d = y0 - py;
     let roots = solve_cubic(a, b, c, d);
     let count = roots[0] as u32;
-    for i in 0..count {
+    let mut i = u32::new(0);
+    while i < count {
         let t = roots[(i + 1) as usize];
         if t >= zero && t <= one {
             let tt = one - t;
@@ -2486,6 +3151,7 @@ fn winding_and_crossings_cubic(
                 }
             }
         }
+        i += u32::new(1);
     }
 }
 
@@ -2530,7 +3196,8 @@ fn closest_point_quadratic_with_t(
 
         let roots = solve_cubic(a, b, c, d);
         let count = roots[0] as u32;
-        for i in 0..count {
+        let mut i = u32::new(0);
+        while i < count {
             let t = roots[(i + 1) as usize];
             if t >= zero && t <= one {
                 let tt = one - t;
@@ -2542,6 +3209,7 @@ fn closest_point_quadratic_with_t(
                     best_t = t;
                 }
             }
+            i += u32::new(1);
         }
     }
 
@@ -2589,7 +3257,8 @@ fn distance_to_quadratic(
 
         let roots = solve_cubic(a, b, c, d);
         let count = roots[0] as u32;
-        for i in 0..count {
+        let mut i = u32::new(0);
+        while i < count {
             let t = roots[(i + 1) as usize];
             if t >= zero && t <= one {
                 let tt = one - t;
@@ -2600,6 +3269,7 @@ fn distance_to_quadratic(
                     min_dist = dist;
                 }
             }
+            i += u32::new(1);
         }
     }
 
@@ -2671,9 +3341,11 @@ fn distance_to_cubic(
                 intervals[num_intervals as usize] = q_root;
                 num_intervals += 1;
             }
-            for i in 0..num_p {
+            let mut i = u32::new(0);
+            while i < num_p {
                 intervals[num_intervals as usize] = p_roots[(i + 1) as usize];
                 num_intervals += 1;
+                i += u32::new(1);
             }
 
             // sort intervals
@@ -2891,9 +3563,11 @@ fn closest_point_cubic_with_t(
                 intervals[num_intervals as usize] = q_root;
                 num_intervals += 1;
             }
-            for i in 0..num_p {
+            let mut i = u32::new(0);
+            while i < num_p {
                 intervals[num_intervals as usize] = p_roots[(i + 1) as usize];
                 num_intervals += 1;
+                i += u32::new(1);
             }
 
             let mut j = u32::new(1);

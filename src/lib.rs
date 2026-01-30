@@ -1,3 +1,8 @@
+//! diffvg-rs core types, scene model, and render entry points.
+//!
+//! The crate exposes a Rust-friendly scene graph, CPU distance queries, and
+//! GPU-backed rendering helpers built on CubeCL/WGPU.
+
 mod color;
 mod distance;
 mod geometry;

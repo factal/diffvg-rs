@@ -1,13 +1,17 @@
+//! CPU-side distance queries and BVH acceleration.
+
 use crate::geometry::{Path, StrokeSegment};
 use crate::math::{Mat3, Vec2};
 use crate::scene::{FillRule, Scene, Shape, ShapeGeometry, StrokeJoin};
 
+/// Closest location along a path segment.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ClosestPathPoint {
     pub segment_index: usize,
     pub t: f32,
 }
 
+/// Closest point on any shape in a group.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct ClosestPoint {
     pub shape_index: usize,
@@ -16,6 +20,7 @@ pub struct ClosestPoint {
     pub path: Option<ClosestPathPoint>,
 }
 
+/// Tuning options for distance evaluation.
 #[derive(Debug, Copy, Clone)]
 pub struct DistanceOptions {
     pub path_tolerance: f32,
@@ -28,6 +33,7 @@ impl Default for DistanceOptions {
 }
 
 impl SceneBvh {
+    /// Build a BVH for each shape group in the scene.
     pub fn new(scene: &Scene) -> Self {
         let mut groups = Vec::with_capacity(scene.groups.len());
         for group in &scene.groups {
@@ -68,6 +74,7 @@ impl Bounds {
         (dx * dx + dy * dy).sqrt()
     }
 }
+/// Per-group BVH acceleration structure for distance and winding queries.
 #[derive(Debug, Clone)]
 pub struct SceneBvh {
     groups: Vec<GroupBvh>,
@@ -128,6 +135,7 @@ struct PathSegmentData {
 const BVH_LEAF_SIZE: usize = 8;
 const BVH_NONE: u32 = u32::MAX;
 
+/// Check if any stroked shape in the group is within its stroke radius of `pt`.
 pub fn within_distance(scene: &Scene, group_index: usize, pt: Vec2) -> bool {
     let Some(group) = scene.groups.get(group_index) else {
         return false;
@@ -148,6 +156,7 @@ pub fn within_distance(scene: &Scene, group_index: usize, pt: Vec2) -> bool {
     false
 }
 
+/// Compute the closest point to `pt` within a given group.
 pub fn compute_distance(
     scene: &Scene,
     group_index: usize,
@@ -190,6 +199,7 @@ pub fn compute_distance(
     best
 }
 
+/// BVH-accelerated variant of `within_distance`.
 pub fn within_distance_bvh(scene: &Scene, bvh: &SceneBvh, group_index: usize, pt: Vec2) -> bool {
     let Some(group) = scene.groups.get(group_index) else {
         return false;
@@ -248,6 +258,7 @@ pub fn within_distance_bvh(scene: &Scene, bvh: &SceneBvh, group_index: usize, pt
     false
 }
 
+/// BVH-accelerated variant of `compute_distance`.
 pub fn compute_distance_bvh(
     scene: &Scene,
     bvh: &SceneBvh,
@@ -326,6 +337,7 @@ pub fn compute_distance_bvh(
                 right_dist = group_bvh.nodes[right].bounds.distance(local_pt);
             }
 
+            // Traverse the closer child first to improve pruning.
             if left_dist < right_dist {
                 if right_dist <= best_dist {
                     stack.push(right);
@@ -347,6 +359,7 @@ pub fn compute_distance_bvh(
     best
 }
 
+/// Determine whether a point is inside the group's filled region.
 pub(crate) fn is_inside(scene: &Scene, group_index: usize, pt: Vec2) -> bool {
     let Some(group) = scene.groups.get(group_index) else {
         return false;
@@ -366,6 +379,7 @@ pub(crate) fn is_inside(scene: &Scene, group_index: usize, pt: Vec2) -> bool {
     }
 }
 
+/// BVH-accelerated inside test used for fill evaluation.
 pub(crate) fn is_inside_bvh(scene: &Scene, bvh: &SceneBvh, group_index: usize, pt: Vec2) -> bool {
     let Some(group) = scene.groups.get(group_index) else {
         return false;
@@ -588,6 +602,7 @@ fn winding_number_segment(kind: u8, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, pt: 
             0
         }
         1 => {
+            // Quadratic: solve y(t) = pt.y to count crossings.
             let a = (p0.y - 2.0 * p1.y + p2.y) as f64;
             let b = (-2.0 * p0.y + 2.0 * p1.y) as f64;
             let c = (p0.y - pt.y) as f64;
@@ -618,6 +633,7 @@ fn winding_number_segment(kind: u8, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, pt: 
             winding
         }
         2 => {
+            // Cubic: solve y(t) = pt.y and accumulate winding by derivative sign.
             let a = (-p0.y + 3.0 * p1.y - 3.0 * p2.y + p3.y) as f64;
             let b = (3.0 * p0.y - 6.0 * p1.y + 3.0 * p2.y) as f64;
             let c = (-3.0 * p0.y + 3.0 * p1.y) as f64;
@@ -862,6 +878,7 @@ fn build_bvh_node(
         return node_index;
     }
 
+    // Split along the longest axis to balance the tree.
     let extent = bounds.extent();
     let axis = if extent.x >= extent.y { 0 } else { 1 };
 
@@ -1053,6 +1070,7 @@ fn build_bvh_node_segments(
         return node_index;
     }
 
+    // Split along the dominant axis of the current bounds.
     let extent = bounds.extent();
     let axis = if extent.x >= extent.y { 0 } else { 1 };
 
@@ -1728,6 +1746,7 @@ fn closest_point_cubic(
         }
     }
 
+    // Root finding on the quintic derivative polynomial to refine closest t.
     let eval_poly = |t: f64| -> f64 { ((((t + b) * t + c) * t + d) * t + e) * t + f };
     let eval_poly_deriv = |t: f64| -> f64 {
         (((5.0 * t + 4.0 * b) * t + 3.0 * c) * t + 2.0 * d) * t + e

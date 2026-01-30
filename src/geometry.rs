@@ -1,5 +1,8 @@
+//! Geometry utilities and path flattening helpers.
+
 use crate::math::Vec2;
 
+/// Simple line segment used for flattened paths.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct LineSegment {
     pub start: Vec2,
@@ -7,11 +10,13 @@ pub struct LineSegment {
 }
 
 impl LineSegment {
+    /// Construct a new line segment.
     pub const fn new(start: Vec2, end: Vec2) -> Self {
         Self { start, end }
     }
 }
 
+/// Line segment with per-end radius and adjacency metadata for strokes.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct StrokeSegment {
     pub start: Vec2,
@@ -25,6 +30,7 @@ pub struct StrokeSegment {
 }
 
 impl StrokeSegment {
+    /// Create a stroke segment with zeroed adjacency metadata.
     pub const fn new(start: Vec2, end: Vec2, r0: f32, r1: f32) -> Self {
         Self {
             start,
@@ -39,6 +45,7 @@ impl StrokeSegment {
     }
 }
 
+/// High-level path commands used to build a diffvg-style path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathSegment {
     MoveTo(Vec2),
@@ -48,6 +55,10 @@ pub enum PathSegment {
     Close,
 }
 
+/// diffvg-compatible path representation.
+///
+/// `num_control_points` encodes the segment kind sequence, while `points`
+/// stores the raw control points for the path.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Path {
     pub num_control_points: Vec<u8>,
@@ -58,6 +69,7 @@ pub struct Path {
 }
 
 impl Path {
+    /// Build a path directly from control point metadata.
     pub fn new(num_control_points: Vec<u8>, points: Vec<Vec2>) -> Self {
         Self {
             num_control_points,
@@ -68,6 +80,7 @@ impl Path {
         }
     }
 
+    /// Convert a segment list into a diffvg-compatible path.
     pub fn from_segments(segments: Vec<PathSegment>) -> Self {
         let mut points = Vec::new();
         let mut num_control_points = Vec::new();
@@ -129,33 +142,40 @@ impl Path {
         }
     }
 
+    /// Attach per-point thickness for variable-width strokes.
     pub fn with_thickness(mut self, thickness: Vec<f32>) -> Self {
         self.thickness = Some(thickness);
         self
     }
 
+    /// Set the closed/open flag for the path.
     pub fn with_closed(mut self, is_closed: bool) -> Self {
         self.is_closed = is_closed;
         self
     }
 
+    /// Enable or disable distance approximation for curves.
     pub fn with_distance_approx(mut self, use_distance_approx: bool) -> Self {
         self.use_distance_approx = use_distance_approx;
         self
     }
 
+    /// Returns true if the path has no segments.
     pub fn is_empty(&self) -> bool {
         self.num_control_points.is_empty() || self.points.is_empty()
     }
 
+    /// Total number of control points stored.
     pub fn num_points(&self) -> usize {
         self.points.len()
     }
 
+    /// Number of base points (segment count).
     pub fn num_base_points(&self) -> usize {
         self.num_control_points.len()
     }
 
+    /// Flatten the path into line segments with a fixed tolerance.
     pub fn flatten(&self, tolerance: f32) -> Vec<LineSegment> {
         self.flatten_with_thickness(tolerance, 0.0, 1.0)
             .into_iter()
@@ -163,6 +183,7 @@ impl Path {
             .collect()
     }
 
+    /// Flatten the path into stroke segments with radius interpolation.
     pub fn flatten_with_thickness(
         &self,
         tolerance: f32,
@@ -209,8 +230,8 @@ impl Path {
                         Some(values) => values,
                         None => break,
                     };
-                    let (p2, r2) = match self.point_and_radius(i2, default_radius, thickness_scale, total_points)
-                    {
+                    let (p2, r2) =
+                        match self.point_and_radius(i2, default_radius, thickness_scale, total_points) {
                         Some(values) => values,
                         None => break,
                     };
@@ -232,13 +253,13 @@ impl Path {
                         Some(values) => values,
                         None => break,
                     };
-                    let (p2, r2) = match self.point_and_radius(i2, default_radius, thickness_scale, total_points)
-                    {
+                    let (p2, r2) =
+                        match self.point_and_radius(i2, default_radius, thickness_scale, total_points) {
                         Some(values) => values,
                         None => break,
                     };
-                    let (p3, r3) = match self.point_and_radius(i3, default_radius, thickness_scale, total_points)
-                    {
+                    let (p3, r3) =
+                        match self.point_and_radius(i3, default_radius, thickness_scale, total_points) {
                         Some(values) => values,
                         None => break,
                     };
@@ -329,6 +350,7 @@ fn flatten_quad_thick(
     let r12 = 0.5 * (r1 + r2);
     let r012 = 0.5 * (r01 + r12);
 
+    // Recursive subdivision keeps segment radii interpolated along the curve.
     flatten_quad_thick(p0, p01, p012, r0, r01, r012, tolerance, depth + 1, out);
     flatten_quad_thick(p012, p12, p2, r012, r12, r2, tolerance, depth + 1, out);
 }
@@ -365,6 +387,7 @@ fn flatten_cubic_thick(
     let r123 = 0.5 * (r12 + r23);
     let r0123 = 0.5 * (r012 + r123);
 
+    // Recursive subdivision keeps segment radii interpolated along the curve.
     flatten_cubic_thick(p0, p01, p012, p0123, r0, r01, r012, r0123, tolerance, depth + 1, out);
     flatten_cubic_thick(p0123, p123, p23, p3, r0123, r123, r23, r3, tolerance, depth + 1, out);
 }
@@ -390,6 +413,7 @@ fn annotate_segments(segments: &mut [StrokeSegment], is_closed: bool) {
         segments[i].start_cap = !is_closed && i == 0;
         segments[i].end_cap = !is_closed && i + 1 == count;
 
+        // Neighbor direction vectors are used for join/cap evaluation.
         let prev_dir = if i == 0 {
             if is_closed {
                 let d = dirs[count - 1];

@@ -1,3 +1,5 @@
+//! GPU renderer implementation and CPU-side SDF helpers.
+
 use crate::geometry::{Path, StrokeSegment};
 use crate::math::{Mat3, Vec2};
 use crate::scene::{Paint, Scene, Shape, ShapeGeometry, StrokeJoin};
@@ -15,15 +17,25 @@ const GRADIENT_STRIDE: usize = 8;
 const MAX_F32_INT: usize = 16_777_216;
 const DEFAULT_PATH_TOLERANCE: f32 = 0.5;
 const TILE_SIZE: u32 = 16;
+const BVH_LEAF_SIZE: usize = 8;
+const BVH_NONE: u32 = u32::MAX;
 
+/// Rendering configuration for rasterization and SDF evaluation.
 #[derive(Debug, Copy, Clone)]
 pub struct RenderOptions {
+    /// Anti-aliasing half-width for SDF evaluation.
     pub aa: f32,
+    /// Curve flattening tolerance for CPU and preprocessing.
     pub path_tolerance: f32,
+    /// Number of samples along X per pixel.
     pub samples_x: u32,
+    /// Number of samples along Y per pixel.
     pub samples_y: u32,
+    /// Random seed used for jitter.
     pub seed: u32,
+    /// Enable subpixel jitter when prefiltering is disabled.
     pub jitter: bool,
+    /// Enable prefiltering via filter weights and smoothstep coverage.
     pub use_prefiltering: bool,
 }
 
@@ -41,6 +53,7 @@ impl Default for RenderOptions {
     }
 }
 
+/// RGBA image in linear color space.
 #[derive(Debug, Clone)]
 pub struct Image {
     pub width: u32,
@@ -49,6 +62,7 @@ pub struct Image {
 }
 
 impl Image {
+    /// Create a solid color image.
     pub fn solid(width: u32, height: u32, color: Color) -> Self {
         let mut pixels = vec![0.0; width as usize * height as usize * 4];
         for chunk in pixels.chunks_mut(4) {
@@ -65,6 +79,7 @@ impl Image {
     }
 }
 
+/// Signed distance field image for the current scene.
 #[derive(Debug, Clone)]
 pub struct SdfImage {
     pub width: u32,
@@ -72,27 +87,34 @@ pub struct SdfImage {
     pub values: Vec<f32>,
 }
 
+/// Render-time error conditions.
 #[derive(Debug)]
 pub enum RenderError {
+    /// Scene parameters are inconsistent or overflow the renderer limits.
     InvalidScene(&'static str),
+    /// GPU kernel launch failed.
     Launch(LaunchError),
 }
 
+/// GPU-backed renderer targeting WGPU via CubeCL.
 pub struct Renderer {
     device: WgpuDevice,
 }
 
 impl Renderer {
+    /// Construct a renderer using the default WGPU device.
     pub fn new() -> Self {
         Self {
             device: WgpuDevice::default(),
         }
     }
 
+    /// Construct a renderer with a caller-provided device.
     pub fn with_device(device: WgpuDevice) -> Self {
         Self { device }
     }
 
+    /// Render a scene into an RGBA image.
     pub fn render(&self, scene: &Scene, options: RenderOptions) -> Result<Image, RenderError> {
         if scene.width == 0 || scene.height == 0 {
             return Ok(Image {
@@ -113,6 +135,7 @@ impl Renderer {
             return Ok(Image::solid(scene.width, scene.height, scene.background));
         }
 
+        // CPU preprocessing: flatten paths, compute bounds, pack GPU buffers.
         let prepared = prepare_scene(scene, &options)?;
         if prepared.num_groups == 0 {
             if let Some(background) = scene.background_image.as_ref() {
@@ -138,23 +161,25 @@ impl Renderer {
 
         let client = WgpuRuntime::client(&self.device);
 
+        // Ensure all GPU buffers are non-empty to satisfy WGPU binding requirements.
         let shape_data = ensure_nonempty(prepared.shape_data, 0.0);
         let segment_data = ensure_nonempty(prepared.segment_data, 0.0);
         let shape_bounds = ensure_nonempty(prepared.shape_bounds, 0.0);
+        let group_bounds = ensure_nonempty(prepared.group_bounds, 0.0);
         let group_data = ensure_nonempty(prepared.group_data, 0.0);
         let group_xform = ensure_nonempty(prepared.group_xform, 0.0);
         let group_shape_xform = ensure_nonempty(prepared.group_shape_xform, 0.0);
         let group_inv_scale = ensure_nonempty(prepared.group_inv_scale, 1.0);
         let group_shapes = ensure_nonempty(prepared.group_shapes, 0.0);
         let shape_xform = ensure_nonempty(prepared.shape_xform, 0.0);
-        let mut group_shape_pairs = prepared.group_shape_pairs;
-        if group_shape_pairs.len() % 2 != 0 {
-            return Err(RenderError::InvalidScene("group shape pair list is malformed"));
-        }
-        let num_pairs = (group_shape_pairs.len() / 2) as u32;
-        if group_shape_pairs.is_empty() {
-            group_shape_pairs = vec![0u32; 2];
-        }
+        let group_bvh_bounds = ensure_nonempty(prepared.group_bvh_bounds, 0.0);
+        let group_bvh_nodes = ensure_nonempty_u32(prepared.group_bvh_nodes, 0);
+        let group_bvh_indices = ensure_nonempty_u32(prepared.group_bvh_indices, 0);
+        let group_bvh_meta = ensure_nonempty_u32(prepared.group_bvh_meta, 0);
+        let path_bvh_bounds = ensure_nonempty(prepared.path_bvh_bounds, 0.0);
+        let path_bvh_nodes = ensure_nonempty_u32(prepared.path_bvh_nodes, 0);
+        let path_bvh_indices = ensure_nonempty_u32(prepared.path_bvh_indices, 0);
+        let path_bvh_meta = ensure_nonempty_u32(prepared.path_bvh_meta, 0);
         let curve_data = ensure_nonempty(prepared.curve_data, 0.0);
         let gradient_data = ensure_nonempty(prepared.gradient_data, 0.0);
         let stop_offsets = ensure_nonempty(prepared.stop_offsets, 0.0);
@@ -163,17 +188,26 @@ impl Renderer {
         let shape_handle = client.create_from_slice(f32::as_bytes(&shape_data));
         let segment_handle = client.create_from_slice(f32::as_bytes(&segment_data));
         let shape_bounds_handle = client.create_from_slice(f32::as_bytes(&shape_bounds));
+        let group_bounds_handle = client.create_from_slice(f32::as_bytes(&group_bounds));
         let group_handle = client.create_from_slice(f32::as_bytes(&group_data));
         let group_xform_handle = client.create_from_slice(f32::as_bytes(&group_xform));
         let group_shape_xform_handle = client.create_from_slice(f32::as_bytes(&group_shape_xform));
         let group_inv_scale_handle = client.create_from_slice(f32::as_bytes(&group_inv_scale));
         let group_shapes_handle = client.create_from_slice(f32::as_bytes(&group_shapes));
         let shape_xform_handle = client.create_from_slice(f32::as_bytes(&shape_xform));
-        let group_shape_pairs_handle = client.create_from_slice(u32::as_bytes(&group_shape_pairs));
+        let group_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&group_bvh_bounds));
+        let group_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&group_bvh_nodes));
+        let group_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&group_bvh_indices));
+        let group_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&group_bvh_meta));
+        let path_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&path_bvh_bounds));
+        let path_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&path_bvh_nodes));
+        let path_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&path_bvh_indices));
+        let path_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&path_bvh_meta));
         let curve_handle = client.create_from_slice(f32::as_bytes(&curve_data));
         let gradient_handle = client.create_from_slice(f32::as_bytes(&gradient_data));
         let stop_offsets_handle = client.create_from_slice(f32::as_bytes(&stop_offsets));
         let stop_colors_handle = client.create_from_slice(f32::as_bytes(&stop_colors));
+        let num_groups = prepared.num_groups;
 
         let output_len = scene.width as usize * scene.height as usize * 4;
         let output_handle = client.empty(output_len * core::mem::size_of::<f32>());
@@ -207,6 +241,7 @@ impl Renderer {
 
         let weight_len = scene.width as usize * scene.height as usize;
         let color_len = weight_len * 4;
+        // Switch accumulation buffers based on float atomics support.
         let (weight_handle, color_handle) = if use_float_atomics {
             let weight_init = vec![0f32; weight_len];
             let color_init = vec![0f32; color_len];
@@ -246,6 +281,7 @@ impl Renderer {
         let tile_offsets_b_handle = client.create_from_slice(u32::as_bytes(&tile_offsets_init));
 
         unsafe {
+            // 1) Precompute filter weights for each subpixel sample.
             let sample_dim = CubeDim::new_1d(256);
             let weight_count = CubeCount::new_1d(div_ceil(total_samples, sample_dim.x));
             if use_float_atomics {
@@ -284,17 +320,17 @@ impl Renderer {
                 .map_err(RenderError::Launch)?;
             }
 
-            let pair_dim = CubeDim::new_1d(256);
-            if num_pairs > 0 {
-                let pair_count = CubeCount::new_1d(div_ceil(num_pairs, pair_dim.x));
+            // 2) Bin shape groups into tiles (GPU prefix-sum + CPU sort).
+            let group_dim = CubeDim::new_1d(256);
+            if num_groups > 0 {
+                let group_count = CubeCount::new_1d(div_ceil(num_groups, group_dim.x));
                 gpu::bin_tiles_count::launch_unchecked::<WgpuRuntime>(
                     &client,
-                    pair_count,
-                    pair_dim,
-                    ArrayArg::from_raw_parts::<f32>(&shape_bounds_handle, shape_bounds.len(), 1),
-                    ArrayArg::from_raw_parts::<u32>(&group_shape_pairs_handle, group_shape_pairs.len(), 1),
+                    group_count,
+                    group_dim,
+                    ArrayArg::from_raw_parts::<f32>(&group_bounds_handle, group_bounds.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&group_shape_xform_handle, group_shape_xform.len(), 1),
-                    ScalarArg::new(num_pairs),
+                    ScalarArg::new(num_groups),
                     ScalarArg::new(tile_count_x),
                     ScalarArg::new(tile_count_y),
                     ScalarArg::new(TILE_SIZE),
@@ -346,12 +382,15 @@ impl Renderer {
                 tile_offsets_b_handle.clone()
             };
             let offsets_bytes = client.read_one(offsets_handle.clone());
-            let offsets_vec = u32::from_bytes(&offsets_bytes).to_vec();
-            let total_entries = *offsets_vec.get(num_tiles).unwrap_or(&0) as usize;
-            let entry_len = total_entries
-                .checked_mul(2)
-                .ok_or(RenderError::InvalidScene("too many tile entries"))?;
-            let tile_entries = ensure_nonempty_u32(vec![0u32; entry_len], 0);
+            let mut offsets_vec = u32::from_bytes(&offsets_bytes).to_vec();
+            if offsets_vec.len() < num_tiles + 1 {
+                offsets_vec.resize(num_tiles + 1, 0);
+            }
+            let total_entries = offsets_vec.get(num_tiles).copied().unwrap_or(0) as usize;
+            if total_entries > u32::MAX as usize {
+                return Err(RenderError::InvalidScene("too many tile entries"));
+            }
+            let tile_entries = ensure_nonempty_u32(vec![0u32; total_entries], 0);
             let tile_entries_handle = client.create_from_slice(u32::as_bytes(&tile_entries));
             let mut tile_cursor = if num_tiles > 0 {
                 offsets_vec[..num_tiles].to_vec()
@@ -363,16 +402,15 @@ impl Renderer {
             }
             let tile_cursor_handle = client.create_from_slice(u32::as_bytes(&tile_cursor));
 
-            if num_pairs > 0 {
-                let pair_count = CubeCount::new_1d(div_ceil(num_pairs, pair_dim.x));
+            if num_groups > 0 {
+                let group_count = CubeCount::new_1d(div_ceil(num_groups, group_dim.x));
                 gpu::bin_tiles_write::launch_unchecked::<WgpuRuntime>(
                     &client,
-                    pair_count,
-                    pair_dim,
-                    ArrayArg::from_raw_parts::<f32>(&shape_bounds_handle, shape_bounds.len(), 1),
-                    ArrayArg::from_raw_parts::<u32>(&group_shape_pairs_handle, group_shape_pairs.len(), 1),
+                    group_count,
+                    group_dim,
+                    ArrayArg::from_raw_parts::<f32>(&group_bounds_handle, group_bounds.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&group_shape_xform_handle, group_shape_xform.len(), 1),
-                    ScalarArg::new(num_pairs),
+                    ScalarArg::new(num_groups),
                     ScalarArg::new(tile_count_x),
                     ScalarArg::new(tile_count_y),
                     ScalarArg::new(TILE_SIZE),
@@ -393,6 +431,20 @@ impl Renderer {
                 tile_entries_handle.clone()
             };
 
+            let mut tile_counts = Vec::with_capacity(num_tiles.max(1));
+            if num_tiles > 0 {
+                for tile_id in 0..num_tiles {
+                    let start = offsets_vec.get(tile_id).copied().unwrap_or(0);
+                    let end = offsets_vec.get(tile_id + 1).copied().unwrap_or(start);
+                    tile_counts.push(end.saturating_sub(start));
+                }
+            } else {
+                tile_counts.push(0);
+            }
+            // Interleave heavy/light tiles to reduce tail latency.
+            let tile_order = build_tile_order(&tile_counts, num_tiles as u32);
+            let tile_order_handle = client.create_from_slice(u32::as_bytes(&tile_order));
+
             let splat_count = CubeCount::new_1d(div_ceil(total_tile_samples, sample_dim.x));
             let use_prefiltering_flag = if use_prefiltering { 1u32 } else { 0u32 };
             if use_float_atomics {
@@ -412,14 +464,23 @@ impl Renderer {
                     ArrayArg::from_raw_parts::<f32>(&gradient_handle, gradient_data.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&stop_offsets_handle, stop_offsets.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&stop_colors_handle, stop_colors.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_bvh_bounds_handle, group_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_nodes_handle, group_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_indices_handle, group_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_meta_handle, group_bvh_meta.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_bvh_bounds_handle, path_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_nodes_handle, path_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_indices_handle, path_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_meta_handle, path_bvh_meta.len(), 1),
                     ArrayArg::from_raw_parts::<u32>(&offsets_handle, num_tiles + 1, 1),
                     ArrayArg::from_raw_parts::<u32>(&tile_entries_sorted_handle, tile_entries.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&tile_order_handle, tile_order.len(), 1),
                     ScalarArg::new(tile_count_x),
                     ScalarArg::new(tile_count_y),
                     ScalarArg::new(TILE_SIZE),
                     ScalarArg::new(scene.width),
                     ScalarArg::new(scene.height),
-                    ScalarArg::new(prepared.num_groups),
+                    ScalarArg::new(num_groups),
                     ArrayArg::from_raw_parts::<f32>(&background_handle, background_image.len(), 1),
                     ScalarArg::new(has_background_image),
                     ScalarArg::new(scene.background.r),
@@ -455,14 +516,23 @@ impl Renderer {
                     ArrayArg::from_raw_parts::<f32>(&gradient_handle, gradient_data.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&stop_offsets_handle, stop_offsets.len(), 1),
                     ArrayArg::from_raw_parts::<f32>(&stop_colors_handle, stop_colors.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_bvh_bounds_handle, group_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_nodes_handle, group_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_indices_handle, group_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_meta_handle, group_bvh_meta.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_bvh_bounds_handle, path_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_nodes_handle, path_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_indices_handle, path_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_meta_handle, path_bvh_meta.len(), 1),
                     ArrayArg::from_raw_parts::<u32>(&offsets_handle, num_tiles + 1, 1),
                     ArrayArg::from_raw_parts::<u32>(&tile_entries_sorted_handle, tile_entries.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&tile_order_handle, tile_order.len(), 1),
                     ScalarArg::new(tile_count_x),
                     ScalarArg::new(tile_count_y),
                     ScalarArg::new(TILE_SIZE),
                     ScalarArg::new(scene.width),
                     ScalarArg::new(scene.height),
-                    ScalarArg::new(prepared.num_groups),
+                    ScalarArg::new(num_groups),
                     ArrayArg::from_raw_parts::<f32>(&background_handle, background_image.len(), 1),
                     ScalarArg::new(has_background_image),
                     ScalarArg::new(scene.background.r),
@@ -483,6 +553,7 @@ impl Renderer {
                 .map_err(RenderError::Launch)?;
             }
 
+            // 3) Resolve splats into the final RGBA image.
             let cube_dim = CubeDim::new_2d(8, 8);
             let cubes_x = div_ceil(scene.width, cube_dim.x);
             let cubes_y = div_ceil(scene.height, cube_dim.y);
@@ -535,6 +606,7 @@ impl Renderer {
         })
     }
 
+    /// Render a signed distance field for the scene.
     pub fn render_sdf(
         &self,
         scene: &Scene,
@@ -607,6 +679,7 @@ impl Renderer {
         })
     }
 
+    /// Evaluate SDF values at arbitrary positions.
     pub fn eval_positions(
         &self,
         scene: &Scene,
@@ -633,13 +706,21 @@ struct PreparedScene {
     segment_data: Vec<f32>,
     curve_data: Vec<f32>,
     shape_bounds: Vec<f32>,
+    group_bounds: Vec<f32>,
     group_data: Vec<f32>,
     group_xform: Vec<f32>,
     group_shape_xform: Vec<f32>,
     group_inv_scale: Vec<f32>,
     group_shapes: Vec<f32>,
     shape_xform: Vec<f32>,
-    group_shape_pairs: Vec<u32>,
+    group_bvh_bounds: Vec<f32>,
+    group_bvh_nodes: Vec<u32>,
+    group_bvh_indices: Vec<u32>,
+    group_bvh_meta: Vec<u32>,
+    path_bvh_bounds: Vec<f32>,
+    path_bvh_nodes: Vec<u32>,
+    path_bvh_indices: Vec<u32>,
+    path_bvh_meta: Vec<u32>,
     gradient_data: Vec<f32>,
     stop_offsets: Vec<f32>,
     stop_colors: Vec<f32>,
@@ -661,13 +742,51 @@ struct PreparedShape {
 }
 
 #[derive(Debug, Copy, Clone)]
+struct Bounds {
+    min: Vec2,
+    max: Vec2,
+}
+
+impl Bounds {
+    fn empty() -> Self {
+        Self {
+            min: Vec2::new(f32::INFINITY, f32::INFINITY),
+            max: Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY),
+        }
+    }
+
+    fn include(&mut self, other: Bounds) {
+        self.min = self.min.min(other.min);
+        self.max = self.max.max(other.max);
+    }
+
+    fn center(&self) -> Vec2 {
+        (self.min + self.max) * 0.5
+    }
+
+    fn extent(&self) -> Vec2 {
+        self.max - self.min
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct BvhNode {
+    bounds: Bounds,
+    left: u32,
+    right: u32,
+    skip: u32,
+    start: u32,
+    count: u32,
+}
+
+#[derive(Debug, Copy, Clone)]
 struct PaintPack {
     kind: u32,
     gradient_index: u32,
     color: Color,
 }
 
-
+// Encode stroke-specific metadata into the packed shape params.
 fn apply_stroke_meta(params: &mut [f32; 8], shape: &Shape, has_thickness: bool) {
     params[4] = if has_thickness { 1.0 } else { 0.0 };
     params[5] = shape.stroke_join.as_u32() as f32;
@@ -680,28 +799,41 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
     let mut curves = Vec::new();
     let mut shape_data = Vec::new();
     let mut shape_bounds = Vec::new();
+    let mut group_bounds = Vec::new();
     let mut group_data = Vec::with_capacity(scene.groups.len() * GROUP_STRIDE);
     let mut group_xform = Vec::with_capacity(scene.groups.len() * 6);
     let mut group_shape_xform = Vec::with_capacity(scene.groups.len() * 6);
     let mut group_inv_scale = Vec::with_capacity(scene.groups.len());
     let mut group_shapes = Vec::new();
     let mut shape_xform = Vec::new();
-    let mut group_shape_pairs = Vec::new();
+    let mut group_bvh_bounds = Vec::new();
+    let mut group_bvh_nodes = Vec::new();
+    let mut group_bvh_indices = Vec::new();
+    let mut group_bvh_meta = Vec::new();
+    let mut path_bvh_bounds = Vec::new();
+    let mut path_bvh_nodes = Vec::new();
+    let mut path_bvh_indices = Vec::new();
+    let mut path_bvh_meta = Vec::new();
     let mut gradient_data = Vec::new();
     let mut stop_offsets = Vec::new();
     let mut stop_colors = Vec::new();
+    let mut shape_bounds_list: Vec<Option<Bounds>> = Vec::new();
 
     if scene.shapes.len() > MAX_F32_INT {
         return Err(RenderError::InvalidScene("too many shapes for f32 indexing"));
     }
 
-    for (group_id, group) in scene.groups.iter().enumerate() {
+    for (_group_id, group) in scene.groups.iter().enumerate() {
         let shape_offset = group_shapes.len() as u32;
         let mut shape_count = 0u32;
         let group_scale = group.shape_to_canvas.average_scale().max(1.0e-6);
         let inv_scale = 1.0 / group_scale;
         let base_tol = options.path_tolerance.max(0.01);
+        // Prefiltering uses AA in shape space, so scale tolerance by transforms.
         let aa_local = if options.use_prefiltering { inv_scale } else { 0.0 };
+        let mut group_shape_indices = Vec::new();
+        let mut group_bounds_acc = Bounds::empty();
+        let mut group_bounds_valid = false;
 
         let xform = group.canvas_to_shape;
         group_xform.extend_from_slice(&[
@@ -731,6 +863,7 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
             let shape = &scene.shapes[shape_idx];
             let total_scale = (group_scale * shape.transform.average_scale()).max(1.0e-6);
             let shape_tolerance = (base_tol / total_scale).max(1.0e-3);
+            // Flatten curves in shape space and pack GPU-ready geometry buffers.
             let prepared = prepare_shape(shape, &mut segments, &mut curves, shape_tolerance);
             let shape_inv = shape.transform.inverse().unwrap_or(Mat3::identity());
             shape_xform.extend_from_slice(&[
@@ -743,8 +876,7 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
             ]);
             let shape_index = (shape_data.len() / SHAPE_STRIDE) as u32;
             group_shapes.push(shape_index as f32);
-            group_shape_pairs.push(group_id as u32);
-            group_shape_pairs.push(shape_index);
+            group_shape_indices.push(shape_index);
 
             shape_data.push(prepared.kind as f32);
             shape_data.push(prepared.seg_offset as f32);
@@ -766,9 +898,40 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
             let bounds_local = inflate_bounds(bounds_group, pad);
             if let Some(bounds) = bounds_local {
                 shape_bounds.extend_from_slice(&[bounds.0.x, bounds.0.y, bounds.1.x, bounds.1.y]);
+                shape_bounds_list.push(Some(Bounds {
+                    min: bounds.0,
+                    max: bounds.1,
+                }));
+                if !group_bounds_valid {
+                    group_bounds_acc = Bounds {
+                        min: bounds.0,
+                        max: bounds.1,
+                    };
+                    group_bounds_valid = true;
+                } else {
+                    group_bounds_acc.include(Bounds {
+                        min: bounds.0,
+                        max: bounds.1,
+                    });
+                }
             } else {
                 shape_bounds.extend_from_slice(&[1.0, 1.0, 0.0, 0.0]);
+                shape_bounds_list.push(None);
             }
+
+            let path_meta = if let ShapeGeometry::Path { path } = &shape.geometry {
+                let curve_segments = path_to_curve_segments(path, shape.stroke_width);
+                append_path_bvh(
+                    &curve_segments,
+                    prepared.curve_offset,
+                    &mut path_bvh_bounds,
+                    &mut path_bvh_nodes,
+                    &mut path_bvh_indices,
+                )
+            } else {
+                [0u32; 4]
+            };
+            path_bvh_meta.extend_from_slice(&path_meta);
 
             shape_count += 1;
         }
@@ -791,6 +954,31 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
             &mut stop_offsets,
             &mut stop_colors,
         );
+
+        let group_bounds_entry = if group_bounds_valid {
+            group_bounds_acc
+        } else {
+            Bounds::empty()
+        };
+        if group_bounds_valid {
+            group_bounds.extend_from_slice(&[
+                group_bounds_entry.min.x,
+                group_bounds_entry.min.y,
+                group_bounds_entry.max.x,
+                group_bounds_entry.max.y,
+            ]);
+        } else {
+            group_bounds.extend_from_slice(&[1.0, 1.0, 0.0, 0.0]);
+        }
+        // Build a per-group BVH for tile binning and inside tests.
+        let group_bvh = append_group_bvh(
+            &group_shape_indices,
+            &shape_bounds_list,
+            &mut group_bvh_bounds,
+            &mut group_bvh_nodes,
+            &mut group_bvh_indices,
+        );
+        group_bvh_meta.extend_from_slice(&group_bvh);
 
         group_data.push(shape_offset as f32);
         group_data.push(shape_count as f32);
@@ -829,13 +1017,21 @@ fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene
         segment_data,
         curve_data,
         shape_bounds,
+        group_bounds,
         group_data,
         group_xform,
         group_shape_xform,
         group_inv_scale,
         group_shapes,
         shape_xform,
-        group_shape_pairs,
+        group_bvh_bounds,
+        group_bvh_nodes,
+        group_bvh_indices,
+        group_bvh_meta,
+        path_bvh_bounds,
+        path_bvh_nodes,
+        path_bvh_indices,
+        path_bvh_meta,
         gradient_data,
         stop_offsets,
         stop_colors,
@@ -1421,30 +1617,209 @@ fn sort_tile_entries(entries: &mut [u32], offsets: &[u32], num_tiles: usize) {
     }
     let max_tiles = num_tiles.min(offsets.len().saturating_sub(1));
     for tile in 0..max_tiles {
-        let start = offsets[tile] as usize * 2;
-        let end = offsets[tile + 1] as usize * 2;
+        let start = offsets[tile] as usize;
+        let end = offsets[tile + 1] as usize;
         if end <= start || end > entries.len() {
             continue;
         }
-        let mut pairs = Vec::with_capacity((end - start) / 2);
-        let mut idx = start;
-        while idx + 1 < end {
-            pairs.push((entries[idx], entries[idx + 1]));
-            idx += 2;
+        entries[start..end].sort_unstable();
+    }
+}
+
+fn build_tile_order(tile_counts: &[u32], num_tiles: u32) -> Vec<u32> {
+    if num_tiles == 0 {
+        return vec![0u32];
+    }
+    let mut tiles = (0..num_tiles)
+        .map(|id| {
+            let count = tile_counts.get(id as usize).copied().unwrap_or(0);
+            (count, id)
+        })
+        .collect::<Vec<_>>();
+    tiles.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let mut order = Vec::with_capacity(num_tiles as usize);
+    if tiles.is_empty() {
+        order.push(0u32);
+        return order;
+    }
+    let mut lo = 0usize;
+    let mut hi = tiles.len().saturating_sub(1);
+    while lo <= hi {
+        order.push(tiles[lo].1);
+        if lo != hi {
+            order.push(tiles[hi].1);
         }
-        pairs.sort_by(|a, b| {
-            let ord = a.0.cmp(&b.0);
-            if ord == std::cmp::Ordering::Equal {
-                a.1.cmp(&b.1)
-            } else {
-                ord
+        lo += 1;
+        if hi == 0 {
+            break;
+        }
+        hi = hi.saturating_sub(1);
+    }
+    order
+}
+
+fn append_group_bvh(
+    group_shape_indices: &[u32],
+    shape_bounds_list: &[Option<Bounds>],
+    out_bounds: &mut Vec<f32>,
+    out_nodes: &mut Vec<u32>,
+    out_indices: &mut Vec<u32>,
+) -> [u32; 4] {
+    let node_offset = (out_nodes.len() / 4) as u32;
+    let index_offset = out_indices.len() as u32;
+    let mut items = Vec::new();
+    for &shape_index in group_shape_indices {
+        let bounds = shape_bounds_list
+            .get(shape_index as usize)
+            .copied()
+            .flatten();
+        if let Some(bounds) = bounds {
+            items.push((shape_index, bounds));
+        }
+    }
+    if items.is_empty() {
+        return [0u32; 4];
+    }
+    let mut bounds_list = Vec::with_capacity(items.len());
+    for item in &items {
+        bounds_list.push(item.1);
+    }
+    let mut indices = (0..items.len()).collect::<Vec<_>>();
+    let mut nodes = Vec::new();
+    let index_len = indices.len();
+    let root = build_bvh_node(&mut nodes, &bounds_list, &mut indices, 0, index_len);
+    assign_bvh_skip(&mut nodes, root, BVH_NONE);
+    for idx in &indices {
+        out_indices.push(items[*idx].0);
+    }
+    for node in &nodes {
+        out_bounds.extend_from_slice(&[
+            node.bounds.min.x,
+            node.bounds.min.y,
+            node.bounds.max.x,
+            node.bounds.max.y,
+        ]);
+        out_nodes.extend_from_slice(&[node.left, node.skip, node.start, node.count]);
+    }
+    let node_count = nodes.len() as u32;
+    let index_count = index_len as u32;
+    [node_offset, node_count, index_offset, index_count]
+}
+
+fn append_path_bvh(
+    curve_segments: &[CurveSegment],
+    curve_offset: u32,
+    out_bounds: &mut Vec<f32>,
+    out_nodes: &mut Vec<u32>,
+    out_indices: &mut Vec<u32>,
+) -> [u32; 4] {
+    if curve_segments.is_empty() {
+        return [0u32; 4];
+    }
+    let node_offset = (out_nodes.len() / 4) as u32;
+    let index_offset = out_indices.len() as u32;
+    let mut bounds_list = Vec::with_capacity(curve_segments.len());
+    for seg in curve_segments {
+        bounds_list.push(curve_segment_bounds(seg));
+    }
+    let mut indices = (0..bounds_list.len()).collect::<Vec<_>>();
+    let mut nodes = Vec::new();
+    let index_len = indices.len();
+    let root = build_bvh_node(&mut nodes, &bounds_list, &mut indices, 0, index_len);
+    assign_bvh_skip(&mut nodes, root, BVH_NONE);
+    for idx in &indices {
+        out_indices.push(curve_offset + *idx as u32);
+    }
+    for node in &nodes {
+        out_bounds.extend_from_slice(&[
+            node.bounds.min.x,
+            node.bounds.min.y,
+            node.bounds.max.x,
+            node.bounds.max.y,
+        ]);
+        out_nodes.extend_from_slice(&[node.left, node.skip, node.start, node.count]);
+    }
+    let node_count = nodes.len() as u32;
+    let index_count = index_len as u32;
+    [node_offset, node_count, index_offset, index_count]
+}
+
+fn build_bvh_node(
+    nodes: &mut Vec<BvhNode>,
+    bounds: &[Bounds],
+    indices: &mut [usize],
+    start: usize,
+    end: usize,
+) -> u32 {
+    let mut node_bounds = Bounds::empty();
+    for idx in &indices[start..end] {
+        node_bounds.include(bounds[*idx]);
+    }
+    let count = end - start;
+    let node_index = nodes.len() as u32;
+    nodes.push(BvhNode {
+        bounds: node_bounds,
+        left: BVH_NONE,
+        right: BVH_NONE,
+        skip: BVH_NONE,
+        start: start as u32,
+        count: count as u32,
+    });
+    if count <= BVH_LEAF_SIZE {
+        return node_index;
+    }
+    let extent = node_bounds.extent();
+    let axis = if extent.x >= extent.y { 0 } else { 1 };
+    indices[start..end].sort_by(|a, b| {
+        let ca = bounds[*a].center();
+        let cb = bounds[*b].center();
+        let va = if axis == 0 { ca.x } else { ca.y };
+        let vb = if axis == 0 { cb.x } else { cb.y };
+        va.partial_cmp(&vb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mid = start + count / 2;
+    let left = build_bvh_node(nodes, bounds, indices, start, mid);
+    let right = build_bvh_node(nodes, bounds, indices, mid, end);
+    let node = &mut nodes[node_index as usize];
+    node.left = left;
+    node.right = right;
+    node.count = 0;
+    node_index
+}
+
+fn assign_bvh_skip(nodes: &mut [BvhNode], node_index: u32, skip: u32) {
+    if nodes.is_empty() || node_index == BVH_NONE {
+        return;
+    }
+    let mut stack = Vec::new();
+    stack.push((node_index, skip));
+    while let Some((node_id, node_skip)) = stack.pop() {
+        if node_id == BVH_NONE {
+            continue;
+        }
+        let node = &mut nodes[node_id as usize];
+        node.skip = node_skip;
+        if node.count == 0 {
+            let left = node.left;
+            let right = node.right;
+            if right != BVH_NONE {
+                stack.push((right, node_skip));
             }
-        });
-        for (i, (group_id, shape_id)) in pairs.into_iter().enumerate() {
-            let base = start + i * 2;
-            entries[base] = group_id;
-            entries[base + 1] = shape_id;
+            if left != BVH_NONE {
+                stack.push((left, right));
+            }
         }
+    }
+}
+
+fn curve_segment_bounds(seg: &CurveSegment) -> Bounds {
+    let (min, max) = bounds_from_points(&[seg.p0, seg.p1, seg.p2, seg.p3]);
+    let mut pad = seg.r0.abs().max(seg.r1.abs()).max(seg.r2.abs());
+    pad = pad.max(seg.r3.abs());
+    let pad = pad.max(0.0);
+    Bounds {
+        min: Vec2::new(min.x - pad, min.y - pad),
+        max: Vec2::new(max.x + pad, max.y + pad),
     }
 }
 
