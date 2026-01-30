@@ -2,12 +2,12 @@
 
 mod api;
 mod bvh;
-mod closest;
+pub(crate) mod closest;
 mod curve;
 mod shape;
 mod types;
 mod utils;
-mod winding;
+pub(crate) mod winding;
 
 #[cfg(test)]
 mod tests;

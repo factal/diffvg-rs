@@ -106,6 +106,55 @@ pub(crate) fn closest_point_circle(center: Vec2, radius: f32, pt: Vec2) -> Vec2 
     center + d * (radius / len)
 }
 
+pub(crate) fn closest_point_ellipse(center: Vec2, radius: Vec2, pt: Vec2) -> Vec2 {
+    let rx = radius.x.abs();
+    let ry = radius.y.abs();
+    let eps = 1.0e-6;
+    if rx < eps && ry < eps {
+        return center;
+    }
+    if rx < eps {
+        let y = (pt.y - center.y).clamp(-ry, ry);
+        return Vec2::new(center.x, center.y + y);
+    }
+    if ry < eps {
+        let x = (pt.x - center.x).clamp(-rx, rx);
+        return Vec2::new(center.x + x, center.y);
+    }
+
+    let mut dx = pt.x - center.x;
+    let mut dy = pt.y - center.y;
+    if dx.abs() < eps && dy.abs() < eps {
+        return Vec2::new(center.x + rx, center.y);
+    }
+
+    let sign_x = if dx < 0.0 { -1.0 } else { 1.0 };
+    let sign_y = if dy < 0.0 { -1.0 } else { 1.0 };
+    dx = dx.abs();
+    dy = dy.abs();
+
+    let mut t = (dy * rx).atan2(dx * ry);
+    let max_iter = 20;
+    let tol = 1.0e-6;
+    for _ in 0..max_iter {
+        let (s, c) = t.sin_cos();
+        let g = rx * dx * s - ry * dy * c + (ry * ry - rx * rx) * s * c;
+        let g_t = rx * dx * c + ry * dy * s + (ry * ry - rx * rx) * (c * c - s * s);
+        if g_t.abs() < 1.0e-12 {
+            break;
+        }
+        let next = (t - g / g_t).clamp(0.0, core::f32::consts::FRAC_PI_2);
+        if (next - t).abs() < tol {
+            t = next;
+            break;
+        }
+        t = next;
+    }
+
+    let (s, c) = t.sin_cos();
+    Vec2::new(center.x + sign_x * rx * c, center.y + sign_y * ry * s)
+}
+
 pub(crate) fn closest_point_rect(min: Vec2, max: Vec2, pt: Vec2) -> Vec2 {
     let inside = pt.x >= min.x && pt.x <= max.x && pt.y >= min.y && pt.y <= max.y;
     if !inside {
@@ -144,9 +193,9 @@ pub(crate) fn rect_signed_distance(pt: Vec2, min: Vec2, max: Vec2) -> f32 {
 pub(crate) fn ellipse_signed_distance(pt: Vec2, center: Vec2, radius: Vec2) -> f32 {
     let rx = radius.x.abs().max(1.0e-6);
     let ry = radius.y.abs().max(1.0e-6);
-    let dx = (pt.x - center.x) / rx;
-    let dy = (pt.y - center.y) / ry;
-    let len = (dx * dx + dy * dy).sqrt();
-    let scale = rx.min(ry);
-    (len - 1.0) * scale
+    let local = pt - center;
+    let inside = (local.x / rx) * (local.x / rx) + (local.y / ry) * (local.y / ry) <= 1.0;
+    let closest = closest_point_ellipse(center, Vec2::new(rx, ry), pt);
+    let dist = (pt - closest).length();
+    if inside { -dist } else { dist }
 }

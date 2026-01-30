@@ -5,7 +5,7 @@ mod constants;
 mod path;
 mod prepare;
 mod renderer;
-mod rng;
+pub(crate) mod rng;
 mod tiles;
 mod types;
 mod utils;

@@ -1,6 +1,8 @@
 //! GPU renderer implementation and CPU-side SDF helpers.
 
+use crate::backward::BackwardOptions;
 use crate::distance::{DistanceOptions, SceneBvh};
+use crate::grad::SceneGrad;
 use crate::math::Vec2;
 use crate::scene::Scene;
 use crate::gpu;
@@ -532,6 +534,25 @@ impl Renderer {
             height: scene.height,
             pixels,
         })
+    }
+
+    /// Backward pass for differentiable rendering (CPU reference implementation).
+    pub fn render_backward(
+        &self,
+        scene: &Scene,
+        options: RenderOptions,
+        backward_options: BackwardOptions,
+        d_render_image: Option<&[f32]>,
+        d_sdf_image: Option<&[f32]>,
+    ) -> Result<SceneGrad, RenderError> {
+        let _ = self;
+        crate::backward::render_backward(
+            scene,
+            options,
+            backward_options,
+            d_render_image,
+            d_sdf_image,
+        )
     }
 
     /// Render a signed distance field for the scene.

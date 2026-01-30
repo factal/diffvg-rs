@@ -1,14 +1,14 @@
 //! Closest-point and within-distance evaluation helpers.
 
-use crate::geometry::StrokeSegment;
-use crate::math::{Mat3, Vec2};
+use crate::math::Vec2;
 use crate::scene::{Shape, ShapeGeometry};
-use crate::path_utils::{ellipse_to_segments, path_point, path_point_radius};
+use crate::path_utils::{path_point, path_point_radius};
 
 use super::bvh::{PathBvh, BVH_NONE};
 use super::curve::{closest_point_cubic, closest_point_quadratic, distance_to_segment};
 use super::shape::{
-    closest_point_circle, closest_point_rect, ellipse_signed_distance, rect_signed_distance,
+    closest_point_circle, closest_point_ellipse, closest_point_rect, ellipse_signed_distance,
+    rect_signed_distance,
 };
 use super::utils::transform_point_inverse;
 
@@ -377,13 +377,8 @@ pub(crate) fn closest_point_shape(
             Some((closest, None))
         }
         ShapeGeometry::Ellipse { center, radius } => {
-            let segments = ellipse_to_segments(
-                *center,
-                Vec2::new(radius.x.abs(), radius.y.abs()),
-                Mat3::identity(),
-                tolerance,
-            );
-            let (local_closest, _path) = closest_point_segments(&segments, local_pt)?;
+            let local_closest =
+                closest_point_ellipse(*center, Vec2::new(radius.x.abs(), radius.y.abs()), local_pt);
             let closest = shape.transform.transform_point(local_closest);
             Some((closest, None))
         }
@@ -506,31 +501,4 @@ pub(crate) fn closest_point_shape(
     }
 }
 
-fn closest_point_segments(
-    segments: &[StrokeSegment],
-    pt: Vec2,
-) -> Option<(Vec2, Option<super::types::ClosestPathPoint>)> {
-    if segments.is_empty() {
-        return None;
-    }
-    let mut min_dist = f32::INFINITY;
-    let mut best = Vec2::ZERO;
-    let mut best_index = 0usize;
-    let mut best_t = 0.0;
-    for (i, seg) in segments.iter().enumerate() {
-        let (dist, cp, t) = distance_to_segment(pt, seg.start, seg.end);
-        if dist < min_dist {
-            min_dist = dist;
-            best = cp;
-            best_index = i;
-            best_t = t;
-        }
-    }
-    Some((
-        best,
-        Some(super::types::ClosestPathPoint {
-            segment_index: best_index,
-            t: best_t,
-        }),
-    ))
-}
+ 
