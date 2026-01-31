@@ -165,8 +165,9 @@ pub(super) fn sample_color(
         let mut d_curr_color = Rgb::new(d.x, d.y, d.z);
         let mut d_curr_alpha = d.w;
         if final_alpha > 1.0e-6 {
+            let d_final_color = d_curr_color;
             d_curr_color = d_curr_color.scale(1.0 / final_alpha);
-            d_curr_alpha -= d_curr_color.dot(final_color) / final_alpha;
+            d_curr_alpha -= d_final_color.dot(final_color) / final_alpha;
         }
         for i in (0..fragments.len()).rev() {
             let prev_alpha = if i > 0 {
@@ -260,11 +261,17 @@ pub(super) fn sample_color_prefiltered(
             let hit = compute_distance_bvh(scene, bvh, group_id, pt, 1.0, dist_options);
             let inside = is_inside_bvh(scene, bvh, group_id, pt);
             if hit.is_some() || inside {
-                let (shape_id, closest_pt, path_info, mut d) = if let Some(hit) = hit {
-                    (hit.shape_index, hit.point, path_info_from_closest(scene, hit.shape_index, hit.path), hit.distance)
-                } else {
-                    (0usize, Vec2::ZERO, None, 0.0)
-                };
+            let (shape_id, closest_pt, path_info, mut d) = if let Some(hit) = hit {
+                (
+                    hit.shape_index,
+                    hit.point,
+                    path_info_from_closest(scene, hit.shape_index, hit.path),
+                    hit.distance,
+                )
+            } else {
+                // Inside the fill but farther than the AA band: treat coverage as saturated.
+                (0usize, Vec2::ZERO, None, 1.0)
+            };
                 if !inside {
                     d = -d;
                 }
@@ -330,8 +337,9 @@ pub(super) fn sample_color_prefiltered(
         let mut d_curr_color = Rgb::new(d.x, d.y, d.z);
         let mut d_curr_alpha = d.w;
         if final_alpha > 1.0e-6 {
+            let d_final_color = d_curr_color;
             d_curr_color = d_curr_color.scale(1.0 / final_alpha);
-            d_curr_alpha -= d_curr_color.dot(final_color) / final_alpha;
+            d_curr_alpha -= d_final_color.dot(final_color) / final_alpha;
         }
         for i in (0..fragments.len()).rev() {
             let prev_alpha = if i > 0 {
