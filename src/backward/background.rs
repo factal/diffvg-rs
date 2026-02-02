@@ -7,6 +7,9 @@ use crate::scene::Scene;
 pub(super) fn sample_background(scene: &Scene, pixel_index: usize) -> Vec4 {
     if let Some(background_image) = scene.background_image.as_ref() {
         let base = pixel_index * 4;
+        if base + 3 >= background_image.len() {
+            return Vec4::ZERO;
+        }
         let r = background_image[base];
         let g = background_image[base + 1];
         let b = background_image[base + 2];

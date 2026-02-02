@@ -45,6 +45,15 @@ pub fn render_backward(
             return Err(RenderError::InvalidScene("d_sdf_image size mismatch"));
         }
     }
+    if let Some(background) = scene.background_image.as_ref() {
+        let expected_len = (scene.width as usize)
+            .checked_mul(scene.height as usize)
+            .and_then(|v| v.checked_mul(4))
+            .ok_or(RenderError::InvalidScene("image size overflow"))?;
+        if background.len() != expected_len {
+            return Err(RenderError::InvalidScene("background image size mismatch"));
+        }
+    }
 
     let include_background_image = d_render_image.is_some() && scene.background_image.is_some();
     let mut grads = SceneGrad::zeros_from_scene(
