@@ -295,14 +295,36 @@ fn quadratic_closest_pt_approx(p0: Vec2, p1: Vec2, p2: Vec2, pt: Vec2) -> (Vec2,
 
 /// Solves a quadratic and stores real roots in ascending order.
 fn solve_quadratic(a: f64, b: f64, c: f64, t: &mut [f64; 2]) -> bool {
+    let eps = 1.0e-12;
+    if a.abs() < eps {
+        if b.abs() < eps {
+            return false;
+        }
+        let root = -c / b;
+        t[0] = root;
+        t[1] = root;
+        return true;
+    }
     let discrim = b * b - 4.0 * a * c;
     if discrim < 0.0 {
         return false;
     }
     let root = discrim.sqrt();
+    if root.abs() < eps {
+        let r = -0.5 * b / a;
+        t[0] = r;
+        t[1] = r;
+        return true;
+    }
     let q = if b < 0.0 { -0.5 * (b - root) } else { -0.5 * (b + root) };
-    t[0] = q / a;
-    t[1] = c / q;
+    if q.abs() < eps {
+        let inv = 0.5 / a;
+        t[0] = (-b - root) * inv;
+        t[1] = (-b + root) * inv;
+    } else {
+        t[0] = q / a;
+        t[1] = c / q;
+    }
     if t[0] > t[1] {
         t.swap(0, 1);
     }

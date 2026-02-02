@@ -37,6 +37,15 @@ impl Renderer {
 
     /// Render a scene into an RGBA image.
     pub fn render(&self, scene: &Scene, options: RenderOptions) -> Result<Image, RenderError> {
+        if let Some(background) = scene.background_image.as_ref() {
+            let expected_len = (scene.width as usize)
+                .checked_mul(scene.height as usize)
+                .and_then(|v| v.checked_mul(4))
+                .ok_or(RenderError::InvalidScene("image size overflow"))?;
+            if background.len() != expected_len {
+                return Err(RenderError::InvalidScene("background image size mismatch"));
+            }
+        }
         if scene.width == 0 || scene.height == 0 {
             return Ok(Image {
                 width: scene.width,
