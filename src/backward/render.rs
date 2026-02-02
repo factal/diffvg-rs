@@ -10,8 +10,14 @@ use super::boundary::boundary_sampling;
 use super::filters::{accumulate_filter_gradient, build_weight_image, gather_d_color};
 use super::sampling::{sample_color, sample_color_prefiltered, sample_distance};
 
+/// Options controlling which auxiliary gradients are computed in the backward pass.
+///
+/// Translation gradients allocate a per-pixel buffer in `SceneGrad` (width * height * 2)
+/// and accumulate contributions from render/SDF sampling. Disable them to save memory
+/// and skip related work when you do not need translation adjoints.
 #[derive(Debug, Copy, Clone)]
 pub struct BackwardOptions {
+    /// Accumulate per-pixel translation gradients into `SceneGrad.translation`.
     pub compute_translation: bool,
 }
 

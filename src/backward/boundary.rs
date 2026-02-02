@@ -16,20 +16,33 @@ use super::types::{
     BoundaryData, BoundarySample, EdgeQuery, PathBoundaryData, PathCdf, ShapeCdf,
 };
 
+/// Packed CDF/PMF tables used by boundary sampling.
 pub(crate) struct BoundarySamplingData {
+    /// Approximate boundary length per shape (scene order).
     pub(crate) shape_lengths: Vec<f32>,
+    /// CDF over shapes weighted by boundary length.
     pub(crate) shape_cdf: Vec<f32>,
+    /// PMF over shapes aligned with `shape_cdf`.
     pub(crate) shape_pmf: Vec<f32>,
+    /// Shape indices aligned with the shape distributions.
     pub(crate) shape_ids: Vec<u32>,
+    /// Shape group indices aligned with the shape distributions.
     pub(crate) group_ids: Vec<u32>,
+    /// Concatenated CDFs for per-path segments.
     pub(crate) path_cdf: Vec<f32>,
+    /// Concatenated PMFs for per-path segments.
     pub(crate) path_pmf: Vec<f32>,
+    /// Concatenated base point indices for per-path segments.
     pub(crate) path_point_ids: Vec<u32>,
+    /// Per-shape offsets into `path_cdf` and `path_pmf`.
     pub(crate) path_cdf_offsets: Vec<u32>,
+    /// Per-shape entry counts for `path_cdf`.
     pub(crate) path_cdf_counts: Vec<u32>,
+    /// Per-shape offsets into `path_point_ids`.
     pub(crate) path_point_offsets: Vec<u32>,
 }
 
+/// Builds packed boundary sampling tables for the current scene.
 pub(crate) fn build_boundary_sampling_data(scene: &Scene) -> Option<BoundarySamplingData> {
     if scene.groups.is_empty() {
         return None;
