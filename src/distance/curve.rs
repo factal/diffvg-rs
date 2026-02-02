@@ -2,6 +2,9 @@
 
 use crate::math::Vec2;
 
+/// Returns (distance, closest_point, t) from `pt` to segment `ab`.
+///
+/// `t` is the clamped param in [0, 1] along the segment.
 pub(crate) fn distance_to_segment(pt: Vec2, a: Vec2, b: Vec2) -> (f32, Vec2, f32) {
     let ab = b - a;
     let denom = ab.dot(ab);
@@ -15,6 +18,9 @@ pub(crate) fn distance_to_segment(pt: Vec2, a: Vec2, b: Vec2) -> (f32, Vec2, f32
     (dist, cp, t)
 }
 
+/// Returns (closest_point, t, distance) from `pt` to a quadratic Bezier.
+///
+/// When `use_distance_approx` is true, a fast approximation is used.
 pub(crate) fn closest_point_quadratic(
     pt: Vec2,
     p0: Vec2,
@@ -69,6 +75,7 @@ pub(crate) fn closest_point_quadratic(
     (best_pt, best_t, best_dist)
 }
 
+/// Approximate closest point on a cubic Bezier by sampling line segments.
 fn closest_point_cubic_approx(
     pt: Vec2,
     p0: Vec2,
@@ -109,6 +116,9 @@ fn closest_point_cubic_approx(
     (best_pt, best_t, best_dist)
 }
 
+/// Returns (closest_point, t, distance) from `pt` to a cubic Bezier.
+///
+/// When `use_distance_approx` is true, a coarse segment sampling is used.
 pub(crate) fn closest_point_cubic(
     pt: Vec2,
     p0: Vec2,
@@ -251,6 +261,7 @@ pub(crate) fn closest_point_cubic(
     (best_pt, best_t, best_dist)
 }
 
+/// Fast approximation of closest point on a quadratic Bezier to `pt`.
 fn quadratic_closest_pt_approx(p0: Vec2, p1: Vec2, p2: Vec2, pt: Vec2) -> (Vec2, f32) {
     let b0 = p0 - pt;
     let b1 = p1 - pt;
@@ -282,6 +293,7 @@ fn quadratic_closest_pt_approx(p0: Vec2, p1: Vec2, p2: Vec2, pt: Vec2) -> (Vec2,
     (cp, t)
 }
 
+/// Solves a quadratic and stores real roots in ascending order.
 fn solve_quadratic(a: f64, b: f64, c: f64, t: &mut [f64; 2]) -> bool {
     let discrim = b * b - 4.0 * a * c;
     if discrim < 0.0 {
@@ -297,6 +309,7 @@ fn solve_quadratic(a: f64, b: f64, c: f64, t: &mut [f64; 2]) -> bool {
     true
 }
 
+/// Solves a cubic and stores real roots; returns the count written.
 fn solve_cubic(a: f64, b: f64, c: f64, d: f64, t: &mut [f64; 3]) -> usize {
     if a.abs() < 1.0e-6 {
         let mut roots = [0.0f64; 2];
@@ -329,6 +342,7 @@ fn solve_cubic(a: f64, b: f64, c: f64, d: f64, t: &mut [f64; 3]) -> usize {
     1
 }
 
+/// Returns the real cubic root of `x`.
 fn cbrt(x: f64) -> f64 {
     if x > 0.0 {
         x.powf(1.0 / 3.0)

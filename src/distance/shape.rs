@@ -6,12 +6,14 @@ use crate::path_utils::{bounds_from_points, rect_corners, transform_path};
 
 use super::bvh::Bounds;
 
+/// Returns shape bounds expanded by stroke radius (if any).
 pub(crate) fn shape_bounds(shape: &Shape) -> Option<Bounds> {
     let geom_bounds = shape_geom_bounds(shape)?;
     let pad = max_stroke_radius(shape);
     Some(inflate_bounds(geom_bounds, pad))
 }
 
+/// Returns geometry bounds after applying the shape transform.
 pub(crate) fn shape_geom_bounds(shape: &Shape) -> Option<Bounds> {
     match &shape.geometry {
         ShapeGeometry::Circle { center, radius } => {
@@ -56,6 +58,7 @@ pub(crate) fn shape_geom_bounds(shape: &Shape) -> Option<Bounds> {
     }
 }
 
+/// Returns the maximum stroke radius in canvas space for the shape.
 pub(crate) fn max_stroke_radius(shape: &Shape) -> f32 {
     let stroke_scale = shape.transform.max_scale().max(0.0);
     let mut radius = shape.stroke_width.abs() * stroke_scale;
@@ -74,6 +77,7 @@ pub(crate) fn max_stroke_radius(shape: &Shape) -> f32 {
     radius
 }
 
+/// Computes axis-aligned half-extents for a transformed ellipse.
 fn ellipse_extents(transform: Mat3, rx: f32, ry: f32) -> Vec2 {
     let m00 = transform.m[0][0];
     let m01 = transform.m[0][1];
@@ -84,6 +88,7 @@ fn ellipse_extents(transform: Mat3, rx: f32, ry: f32) -> Vec2 {
     Vec2::new(ex, ey)
 }
 
+/// Returns bounds expanded by `pad` in all directions.
 fn inflate_bounds(bounds: Bounds, pad: f32) -> Bounds {
     let pad = pad.max(0.0);
     Bounds {
@@ -92,11 +97,13 @@ fn inflate_bounds(bounds: Bounds, pad: f32) -> Bounds {
     }
 }
 
+/// Returns bounds for a segment's control points with padding.
 pub(crate) fn segment_bounds(points: &[Vec2], pad: f32) -> Bounds {
     let (min, max) = bounds_from_points(points);
     inflate_bounds(Bounds { min, max }, pad)
 }
 
+/// Returns the closest point on a circle perimeter to `pt`.
 pub(crate) fn closest_point_circle(center: Vec2, radius: f32, pt: Vec2) -> Vec2 {
     let d = pt - center;
     let len = d.length();
@@ -106,6 +113,7 @@ pub(crate) fn closest_point_circle(center: Vec2, radius: f32, pt: Vec2) -> Vec2 
     center + d * (radius / len)
 }
 
+/// Returns the closest point on an ellipse perimeter to `pt`.
 pub(crate) fn closest_point_ellipse(center: Vec2, radius: Vec2, pt: Vec2) -> Vec2 {
     let rx = radius.x.abs();
     let ry = radius.y.abs();
@@ -155,6 +163,7 @@ pub(crate) fn closest_point_ellipse(center: Vec2, radius: Vec2, pt: Vec2) -> Vec
     Vec2::new(center.x + sign_x * rx * c, center.y + sign_y * ry * s)
 }
 
+/// Returns the closest point on an axis-aligned rectangle to `pt`.
 pub(crate) fn closest_point_rect(min: Vec2, max: Vec2, pt: Vec2) -> Vec2 {
     let inside = pt.x >= min.x && pt.x <= max.x && pt.y >= min.y && pt.y <= max.y;
     if !inside {
@@ -175,6 +184,7 @@ pub(crate) fn closest_point_rect(min: Vec2, max: Vec2, pt: Vec2) -> Vec2 {
     }
 }
 
+/// Returns signed distance to an axis-aligned rectangle (negative inside).
 pub(crate) fn rect_signed_distance(pt: Vec2, min: Vec2, max: Vec2) -> f32 {
     let dx = (min.x - pt.x).max(0.0).max(pt.x - max.x);
     let dy = (min.y - pt.y).max(0.0).max(pt.y - max.y);
@@ -190,6 +200,7 @@ pub(crate) fn rect_signed_distance(pt: Vec2, min: Vec2, max: Vec2) -> f32 {
     }
 }
 
+/// Returns signed distance to an axis-aligned ellipse (negative inside).
 pub(crate) fn ellipse_signed_distance(pt: Vec2, center: Vec2, radius: Vec2) -> f32 {
     let rx = radius.x.abs().max(1.0e-6);
     let ry = radius.y.abs().max(1.0e-6);

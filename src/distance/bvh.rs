@@ -6,12 +6,15 @@ use crate::path_utils::path_point_radius;
 
 use super::shape::{segment_bounds, shape_bounds};
 
+/// Sentinel value for a missing BVH child index.
 pub(crate) const BVH_NONE: u32 = u32::MAX;
+/// Maximum number of primitives stored in a leaf node.
 const BVH_LEAF_SIZE: usize = 8;
 
 /// Per-group BVH acceleration structure for distance and winding queries.
 #[derive(Debug, Clone)]
 pub struct SceneBvh {
+    /// BVHs stored in the same order as `Scene.groups`.
     pub(crate) groups: Vec<GroupBvh>,
 }
 
@@ -26,36 +29,54 @@ impl SceneBvh {
     }
 }
 
+/// BVH over shapes within a single group.
 #[derive(Debug, Clone)]
 pub(crate) struct GroupBvh {
+    /// Flat array of BVH nodes.
     pub(crate) nodes: Vec<BvhNode>,
+    /// Indices into `shapes`, referenced by leaf node ranges.
     pub(crate) indices: Vec<usize>,
+    /// Cached shape metadata used during traversal.
     pub(crate) shapes: Vec<BvhShape>,
 }
 
+/// A BVH node referencing either child nodes or a leaf range.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct BvhNode {
+    /// Axis-aligned bounds of the node in group-local space.
     pub(crate) bounds: Bounds,
+    /// Index of the left child or `BVH_NONE` if leaf.
     pub(crate) left: u32,
+    /// Index of the right child or `BVH_NONE` if leaf.
     pub(crate) right: u32,
+    /// Start index into the `indices` array for leaf nodes.
     pub(crate) start: u32,
+    /// Number of indices for leaf nodes (0 for internal nodes).
     pub(crate) count: u32,
 }
 
+/// Cached per-shape data used during BVH traversal.
 #[derive(Debug, Clone)]
 pub(crate) struct BvhShape {
+    /// Index into `Scene.shapes`.
     pub(crate) shape_index: usize,
+    /// Shape bounds in group-local space.
     pub(crate) bounds: Bounds,
+    /// Optional per-path BVH for path segments.
     pub(crate) path_bvh: Option<PathBvh>,
 }
 
+/// Axis-aligned bounding box in 2D.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Bounds {
+    /// Minimum corner (x, y).
     pub(crate) min: Vec2,
+    /// Maximum corner (x, y).
     pub(crate) max: Vec2,
 }
 
 impl Bounds {
+    /// Return an inverted empty bounds suitable for incremental expansion.
     pub(crate) fn empty() -> Self {
         Self {
             min: Vec2::new(f32::INFINITY, f32::INFINITY),
@@ -63,23 +84,28 @@ impl Bounds {
         }
     }
 
+    /// Expand this bounds to include `other`.
     pub(crate) fn include(&mut self, other: Bounds) {
         self.min = self.min.min(other.min);
         self.max = self.max.max(other.max);
     }
 
+    /// Return the center point of the bounds.
     pub(crate) fn center(&self) -> Vec2 {
         (self.min + self.max) * 0.5
     }
 
+    /// Return the extents (max - min) of the bounds.
     pub(crate) fn extent(&self) -> Vec2 {
         self.max - self.min
     }
 
+    /// Return true if `pt` lies inside or on the bounds.
     pub(crate) fn contains(&self, pt: Vec2) -> bool {
         pt.x >= self.min.x && pt.x <= self.max.x && pt.y >= self.min.y && pt.y <= self.max.y
     }
 
+    /// Return the Euclidean distance from `pt` to the box (0 if inside).
     pub(crate) fn distance(&self, pt: Vec2) -> f32 {
         let dx = (self.min.x - pt.x).max(0.0).max(pt.x - self.max.x);
         let dy = (self.min.y - pt.y).max(0.0).max(pt.y - self.max.y);
@@ -87,30 +113,48 @@ impl Bounds {
     }
 }
 
+/// BVH over path segments for a single path shape.
 #[derive(Debug, Clone)]
 pub(crate) struct PathBvh {
+    /// Flat array of BVH nodes.
     pub(crate) nodes: Vec<BvhNode>,
+    /// Indices into `segments`, referenced by leaf node ranges.
     pub(crate) indices: Vec<usize>,
+    /// Cached segment data used for distance queries.
     pub(crate) segments: Vec<PathSegmentData>,
+    /// Whether the path prefers distance approximation for curves.
     pub(crate) use_distance_approx: bool,
 }
 
+/// Cached data for a single path segment (line/quad/cubic).
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct PathSegmentData {
+    /// Segment index within the original path.
     pub(crate) segment_index: usize,
+    /// Segment kind: 0=line, 1=quadratic, 2=cubic.
     pub(crate) kind: u8,
+    /// First control point.
     pub(crate) p0: Vec2,
+    /// Second control point.
     pub(crate) p1: Vec2,
+    /// Third control point (duplicates for line/quad).
     pub(crate) p2: Vec2,
+    /// Fourth control point (duplicates for line/quad).
     pub(crate) p3: Vec2,
+    /// Stroke radius at p0.
     pub(crate) r0: f32,
+    /// Stroke radius at p1.
     pub(crate) r1: f32,
+    /// Stroke radius at p2.
     pub(crate) r2: f32,
+    /// Stroke radius at p3.
     pub(crate) r3: f32,
+    /// Axis-aligned bounds for the segment (including radius).
     pub(crate) bounds: Bounds,
 }
 
 impl GroupBvh {
+    /// Build a BVH for a group, including optional per-path BVHs.
     pub(crate) fn build(scene: &Scene, group: &crate::scene::ShapeGroup) -> Self {
         let mut shapes = Vec::new();
         for &shape_index in &group.shape_indices {
@@ -142,6 +186,7 @@ impl GroupBvh {
     }
 }
 
+/// Recursively build a BVH over shape bounds.
 fn build_bvh_node(
     nodes: &mut Vec<BvhNode>,
     shapes: &[BvhShape],
@@ -192,6 +237,7 @@ fn build_bvh_node(
     node_index
 }
 
+/// Build a path-segment BVH for a path shape.
 fn build_path_bvh(shape: &Shape) -> Option<PathBvh> {
     let ShapeGeometry::Path { path } = &shape.geometry else {
         return None;
@@ -334,6 +380,7 @@ fn build_path_bvh(shape: &Shape) -> Option<PathBvh> {
     })
 }
 
+/// Recursively build a BVH over path segments.
 fn build_bvh_node_segments(
     nodes: &mut Vec<BvhNode>,
     segments: &[PathSegmentData],

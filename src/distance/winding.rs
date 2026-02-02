@@ -7,6 +7,9 @@ use crate::path_utils::path_point;
 
 use super::bvh::{Bounds, PathBvh, BVH_NONE};
 
+/// Returns the winding number contribution for a single shape at `pt`.
+///
+/// If `path_bvh` is provided, it is used for path shapes to accelerate queries.
 pub(crate) fn winding_number_shape(shape: &Shape, path_bvh: Option<&PathBvh>, pt: Vec2) -> i32 {
     match &shape.geometry {
         ShapeGeometry::Circle { center, radius } => {
@@ -44,6 +47,7 @@ pub(crate) fn winding_number_shape(shape: &Shape, path_bvh: Option<&PathBvh>, pt
     }
 }
 
+/// Computes the winding number of a path at `pt` by walking segments.
 fn winding_number_path(path: &Path, pt: Vec2) -> i32 {
     if path.points.is_empty() {
         return 0;
@@ -116,6 +120,7 @@ fn winding_number_path(path: &Path, pt: Vec2) -> i32 {
     winding
 }
 
+/// Computes the winding number using a path BVH for pruning.
 fn winding_number_path_bvh(path_bvh: &PathBvh, pt: Vec2) -> i32 {
     if path_bvh.nodes.is_empty() {
         return 0;
@@ -149,6 +154,7 @@ fn winding_number_path_bvh(path_bvh: &PathBvh, pt: Vec2) -> i32 {
     winding
 }
 
+/// Tests whether a +X ray from `pt` can intersect `bounds`.
 fn ray_intersects_bounds(bounds: &Bounds, pt: Vec2) -> bool {
     if pt.y < bounds.min.y || pt.y > bounds.max.y {
         return false;
@@ -159,6 +165,9 @@ fn ray_intersects_bounds(bounds: &Bounds, pt: Vec2) -> bool {
     true
 }
 
+/// Returns the winding contribution of a segment for a +X ray at `pt`.
+///
+/// `kind` selects line (0), quadratic (1), or cubic (2).
 fn winding_number_segment(kind: u8, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, pt: Vec2) -> i32 {
     match kind {
         0 => {
@@ -235,6 +244,7 @@ fn winding_number_segment(kind: u8, p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, pt: 
     }
 }
 
+/// Solves a quadratic and stores real roots in ascending order.
 fn solve_quadratic(a: f64, b: f64, c: f64, t: &mut [f64; 2]) -> bool {
     let discrim = b * b - 4.0 * a * c;
     if discrim < 0.0 {
@@ -250,6 +260,7 @@ fn solve_quadratic(a: f64, b: f64, c: f64, t: &mut [f64; 2]) -> bool {
     true
 }
 
+/// Solves a cubic and stores real roots; returns the count written.
 fn solve_cubic(a: f64, b: f64, c: f64, d: f64, t: &mut [f64; 3]) -> usize {
     if a.abs() < 1.0e-6 {
         let mut roots = [0.0f64; 2];
@@ -282,6 +293,7 @@ fn solve_cubic(a: f64, b: f64, c: f64, d: f64, t: &mut [f64; 3]) -> usize {
     1
 }
 
+/// Returns the real cubic root of `x`.
 fn cbrt(x: f64) -> f64 {
     if x > 0.0 {
         x.powf(1.0 / 3.0)

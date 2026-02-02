@@ -12,6 +12,11 @@ use super::shape::{
 };
 use super::utils::transform_point_inverse;
 
+/// Returns true if `pt` lies within the per-segment stroke radius of any curve in `path_bvh`.
+///
+/// `pt` must be in the path's local space (after applying the per-shape inverse transform).
+/// The query uses the path BVH for pruning and respects `use_distance_approx` when evaluating
+/// quadratic/cubic distances.
 pub(crate) fn within_distance_path_bvh(path_bvh: &PathBvh, pt: Vec2) -> bool {
     if path_bvh.nodes.is_empty() {
         return false;
@@ -92,6 +97,10 @@ pub(crate) fn within_distance_path_bvh(path_bvh: &PathBvh, pt: Vec2) -> bool {
     false
 }
 
+/// Finds the closest point on any segment in `path_bvh` to `pt`.
+///
+/// Returns the closest point in path-local space along with optional path metadata
+/// (segment index + parametric `t`). Returns `None` when the BVH is empty.
 pub(crate) fn closest_point_path_bvh(
     path_bvh: &PathBvh,
     pt: Vec2,
@@ -189,6 +198,11 @@ pub(crate) fn closest_point_path_bvh(
     }
 }
 
+/// Returns true if `pt` is within distance `r` of the shape boundary.
+///
+/// `pt` is expected in the group-local space (after applying `ShapeGroup.canvas_to_shape`);
+/// the per-shape inverse transform is applied internally. For paths, `r` is treated as
+/// the stroke radius and per-point thickness values are honored. Returns `false` when `r <= 0`.
 pub(crate) fn within_distance_shape(shape: &Shape, pt: Vec2, r: f32) -> bool {
     if r <= 0.0 {
         return false;
@@ -364,6 +378,11 @@ pub(crate) fn within_distance_shape(shape: &Shape, pt: Vec2, r: f32) -> bool {
     }
 }
 
+/// Computes the closest point on `shape` to `pt` in group-local space.
+///
+/// The returned point is in group-local space, and path metadata is provided only for paths.
+/// Returns `None` when the path has no points. `tolerance` is reserved for future path
+/// approximation controls and is currently unused.
 pub(crate) fn closest_point_shape(
     shape: &Shape,
     pt: Vec2,
@@ -500,5 +519,3 @@ pub(crate) fn closest_point_shape(
         }
     }
 }
-
- 
