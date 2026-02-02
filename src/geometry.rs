@@ -5,7 +5,9 @@ use crate::math::Vec2;
 /// Simple line segment used for flattened paths.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct LineSegment {
+    /// Start point of the line segment.
     pub start: Vec2,
+    /// End point of the line segment.
     pub end: Vec2,
 }
 
@@ -19,13 +21,21 @@ impl LineSegment {
 /// Line segment with per-end radius and adjacency metadata for strokes.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct StrokeSegment {
+    /// Start point of the stroke segment.
     pub start: Vec2,
+    /// End point of the stroke segment.
     pub end: Vec2,
+    /// Stroke radius at the start point.
     pub r0: f32,
+    /// Stroke radius at the end point.
     pub r1: f32,
+    /// Normalized direction pointing into the start (opposite of the previous segment direction).
     pub prev_dir: Vec2,
+    /// Normalized direction pointing out of the end (along the next segment direction).
     pub next_dir: Vec2,
+    /// True when this segment begins an open path and should use a cap.
     pub start_cap: bool,
+    /// True when this segment ends an open path and should use a cap.
     pub end_cap: bool,
 }
 
@@ -48,10 +58,15 @@ impl StrokeSegment {
 /// High-level path commands used to build a diffvg-style path.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathSegment {
+    /// Move the current point to a new location without creating geometry.
     MoveTo(Vec2),
+    /// Add a straight line segment to the given end point.
     LineTo(Vec2),
+    /// Add a quadratic Bezier segment with one control point and an end point.
     QuadTo(Vec2, Vec2),
+    /// Add a cubic Bezier segment with two control points and an end point.
     CubicTo(Vec2, Vec2, Vec2),
+    /// Close the current subpath.
     Close,
 }
 
@@ -61,15 +76,23 @@ pub enum PathSegment {
 /// stores the raw control points for the path.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Path {
+    /// Number of control points per segment (0 = line, 1 = quadratic, 2 = cubic).
     pub num_control_points: Vec<u8>,
+    /// Control points in diffvg order, including the initial anchor point.
     pub points: Vec<Vec2>,
+    /// Optional per-point stroke radii for variable-width strokes.
     pub thickness: Option<Vec<f32>>,
+    /// Whether the path should be treated as closed for joins/caps and indexing.
     pub is_closed: bool,
+    /// Whether curve distance queries should use approximation.
     pub use_distance_approx: bool,
 }
 
 impl Path {
     /// Build a path directly from control point metadata.
+    ///
+    /// `num_control_points` and `points` are stored as-is and are expected to
+    /// follow the diffvg path encoding.
     pub fn new(num_control_points: Vec<u8>, points: Vec<Vec2>) -> Self {
         Self {
             num_control_points,
@@ -81,6 +104,9 @@ impl Path {
     }
 
     /// Convert a segment list into a diffvg-compatible path.
+    ///
+    /// This helper assumes a single subpath; additional `MoveTo` segments are
+    /// ignored once a current point exists.
     pub fn from_segments(segments: Vec<PathSegment>) -> Self {
         let mut points = Vec::new();
         let mut num_control_points = Vec::new();
@@ -143,6 +169,8 @@ impl Path {
     }
 
     /// Attach per-point thickness for variable-width strokes.
+    ///
+    /// The values are interpreted as radii during flattening.
     pub fn with_thickness(mut self, thickness: Vec<f32>) -> Self {
         self.thickness = Some(thickness);
         self
@@ -184,6 +212,9 @@ impl Path {
     }
 
     /// Flatten the path into stroke segments with radius interpolation.
+    ///
+    /// `default_radius` is used when no per-point thickness is available, and
+    /// `thickness_scale` scales the per-point values before interpolation.
     pub fn flatten_with_thickness(
         &self,
         tolerance: f32,
@@ -276,6 +307,7 @@ impl Path {
         out
     }
 
+    /// Fetch two consecutive points and their radii for a segment.
     fn segment_points(
         &self,
         i0: usize,
@@ -289,6 +321,7 @@ impl Path {
         Some((p0, p1, r0, r1))
     }
 
+    /// Fetch a point and its radius with closed-path index wrapping.
     fn point_and_radius(
         &self,
         index: usize,
@@ -324,8 +357,10 @@ impl Path {
     }
 }
 
+/// Maximum recursive depth when flattening Bezier curves.
 const MAX_SUBDIVISION_DEPTH: u32 = 16;
 
+/// Recursively flatten a quadratic Bezier into stroke segments with interpolated radii.
 fn flatten_quad_thick(
     p0: Vec2,
     p1: Vec2,
@@ -355,6 +390,7 @@ fn flatten_quad_thick(
     flatten_quad_thick(p012, p12, p2, r012, r12, r2, tolerance, depth + 1, out);
 }
 
+/// Recursively flatten a cubic Bezier into stroke segments with interpolated radii.
 fn flatten_cubic_thick(
     p0: Vec2,
     p1: Vec2,
@@ -392,6 +428,7 @@ fn flatten_cubic_thick(
     flatten_cubic_thick(p0123, p123, p23, p3, r0123, r123, r23, r3, tolerance, depth + 1, out);
 }
 
+/// Populate adjacency directions and cap flags for a segment list.
 fn annotate_segments(segments: &mut [StrokeSegment], is_closed: bool) {
     let count = segments.len();
     if count == 0 {
@@ -439,17 +476,20 @@ fn annotate_segments(segments: &mut [StrokeSegment], is_closed: bool) {
     }
 }
 
+/// Check whether a quadratic Bezier is within the flatness tolerance.
 fn quad_flat_enough(p0: Vec2, p1: Vec2, p2: Vec2, tolerance: f32) -> bool {
     let dist = distance_point_line(p1, p0, p2);
     dist <= tolerance
 }
 
+/// Check whether a cubic Bezier is within the flatness tolerance.
 fn cubic_flat_enough(p0: Vec2, p1: Vec2, p2: Vec2, p3: Vec2, tolerance: f32) -> bool {
     let dist1 = distance_point_line(p1, p0, p3);
     let dist2 = distance_point_line(p2, p0, p3);
     dist1.max(dist2) <= tolerance
 }
 
+/// Compute the perpendicular distance from a point to a line segment.
 fn distance_point_line(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let ap = p - a;

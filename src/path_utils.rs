@@ -3,6 +3,7 @@
 use crate::geometry::{Path, StrokeSegment};
 use crate::math::{Mat3, Vec2};
 
+/// Fetch a point from a path, wrapping indices for closed paths.
 pub(crate) fn path_point(path: &Path, index: usize, total_points: usize) -> Option<Vec2> {
     if total_points == 0 {
         return None;
@@ -14,6 +15,7 @@ pub(crate) fn path_point(path: &Path, index: usize, total_points: usize) -> Opti
     path.points.get(index).copied()
 }
 
+/// Fetch a point and its stroke radius, applying per-point thickness when available.
 pub(crate) fn path_point_radius(
     path: &Path,
     index: usize,
@@ -38,6 +40,7 @@ pub(crate) fn path_point_radius(
     Some((p, radius))
 }
 
+/// Return the rectangle corners in winding order starting at (min.x, min.y).
 pub(crate) fn rect_corners(min: Vec2, max: Vec2) -> [Vec2; 4] {
     [
         Vec2::new(min.x, min.y),
@@ -47,6 +50,7 @@ pub(crate) fn rect_corners(min: Vec2, max: Vec2) -> [Vec2; 4] {
     ]
 }
 
+/// Approximate an ellipse with stroke segments in transformed space.
 pub(crate) fn ellipse_to_segments(
     center: Vec2,
     radius: Vec2,
@@ -80,6 +84,7 @@ pub(crate) fn ellipse_to_segments(
     segs
 }
 
+/// Apply a transform to all control points in a path.
 pub(crate) fn transform_path(path: &Path, transform: Mat3) -> Path {
     if transform.is_identity() {
         return path.clone();
@@ -98,6 +103,7 @@ pub(crate) fn transform_path(path: &Path, transform: Mat3) -> Path {
     }
 }
 
+/// Compute an axis-aligned bounding box for a non-empty point set.
 pub(crate) fn bounds_from_points(points: &[Vec2]) -> (Vec2, Vec2) {
     let mut min = Vec2::new(f32::INFINITY, f32::INFINITY);
     let mut max = Vec2::new(f32::NEG_INFINITY, f32::NEG_INFINITY);

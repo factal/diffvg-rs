@@ -7,78 +7,131 @@ use crate::scene::{Paint, Scene, Shape, ShapeGeometry};
 /// Gradient stop gradient (offset + RGBA).
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DGradientStop {
+    /// Gradient with respect to the normalized stop offset.
     pub offset: f32,
+    /// Gradient with respect to the stop color in linear RGBA.
     pub color: Color,
 }
 
 /// Linear gradient adjoints in canvas space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DLinearGradient {
+    /// Gradient with respect to the start point (canvas space).
     pub start: Vec2,
+    /// Gradient with respect to the end point (canvas space).
     pub end: Vec2,
+    /// Gradients for each stop, matching the original stop order.
     pub stops: Vec<DGradientStop>,
 }
 
 /// Radial gradient adjoints in canvas space.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DRadialGradient {
+    /// Gradient with respect to the radial center (canvas space).
     pub center: Vec2,
+    /// Gradient with respect to the radial radii (canvas space).
     pub radius: Vec2,
+    /// Gradients for each stop, matching the original stop order.
     pub stops: Vec<DGradientStop>,
 }
 
 /// Paint adjoints for fills and strokes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DPaint {
+    /// Solid color gradient in linear RGBA.
     Solid(Color),
+    /// Linear gradient adjoints (canvas space).
     LinearGradient(DLinearGradient),
+    /// Radial gradient adjoints (canvas space).
     RadialGradient(DRadialGradient),
 }
 
 /// Geometry adjoints per shape.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DShapeGeometry {
-    Circle { center: Vec2, radius: f32 },
-    Ellipse { center: Vec2, radius: Vec2 },
-    Rect { min: Vec2, max: Vec2 },
-    Path { points: Vec<Vec2>, thickness: Option<Vec<f32>> },
+    /// Circle geometry gradients.
+    Circle {
+        /// Gradient with respect to the circle center (shape local).
+        center: Vec2,
+        /// Gradient with respect to the circle radius.
+        radius: f32,
+    },
+    /// Ellipse geometry gradients.
+    Ellipse {
+        /// Gradient with respect to the ellipse center (shape local).
+        center: Vec2,
+        /// Gradient with respect to the ellipse radii.
+        radius: Vec2,
+    },
+    /// Rectangle geometry gradients.
+    Rect {
+        /// Gradient with respect to the rectangle min corner (shape local).
+        min: Vec2,
+        /// Gradient with respect to the rectangle max corner (shape local).
+        max: Vec2,
+    },
+    /// Path geometry gradients.
+    Path {
+        /// Gradients for each path control point in order.
+        points: Vec<Vec2>,
+        /// Optional gradients for per-point stroke thickness.
+        thickness: Option<Vec<f32>>,
+    },
 }
 
 /// Shape adjoints, including per-shape transform gradients.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DShape {
+    /// Geometry parameter gradients for this shape.
     pub geometry: DShapeGeometry,
+    /// Gradient with respect to the per-shape transform.
     pub transform: Mat3,
+    /// Gradient with respect to the base stroke width.
     pub stroke_width: f32,
 }
 
 /// Shape group adjoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DShapeGroup {
+    /// Gradient with respect to the group shape-to-canvas transform.
     pub shape_to_canvas: Mat3,
+    /// Optional fill paint gradients.
     pub fill: Option<DPaint>,
+    /// Optional stroke paint gradients.
     pub stroke: Option<DPaint>,
 }
 
 /// Filter adjoints.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct DFilter {
+    /// Gradient with respect to the filter radius.
     pub radius: f32,
 }
 
 /// Backward outputs mirroring the forward scene data.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneGrad {
+    /// Per-shape gradients in scene order.
     pub shapes: Vec<DShape>,
+    /// Per-shape-group gradients in scene order.
     pub shape_groups: Vec<DShapeGroup>,
+    /// Reconstruction filter gradients.
     pub filter: DFilter,
+    /// Gradient with respect to the constant background color.
     pub background: Color,
+    /// Optional gradients for the background image (RGBA per pixel).
     pub background_image: Option<Vec<f32>>,
+    /// Optional gradients for per-pixel translation (x, y per pixel).
     pub translation: Option<Vec<f32>>,
 }
 
 impl SceneGrad {
-    /// Allocate zeroed gradients matching the provided scene.
+    /// Allocate zeroed gradients sized to match the provided scene.
+    ///
+    /// When `include_background_image` is true and the scene has a background image,
+    /// the gradient buffer is sized to `width * height * 4` (RGBA). When
+    /// `include_translation` is true, the translation buffer is sized to
+    /// `width * height * 2` (x, y per pixel).
     pub fn zeros_from_scene(
         scene: &Scene,
         include_background_image: bool,
@@ -133,6 +186,10 @@ impl SceneGrad {
     }
 
     /// Accumulate another gradient into this one (element-wise add).
+    ///
+    /// Variable-length buffers (path points, thickness, optional slices) are
+    /// added up to the shorter length, with missing optional data cloned from
+    /// `other` when needed.
     pub fn accumulate_from(&mut self, other: &SceneGrad) {
         for (dst_shape, src_shape) in self.shapes.iter_mut().zip(other.shapes.iter()) {
             dst_shape.stroke_width += src_shape.stroke_width;
@@ -326,51 +383,94 @@ fn add_slice_option(dst: &mut Option<Vec<f32>>, src: &Option<Vec<f32>>) {
 /// diffvg-compatible path gradients with metadata.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffvgPathGrad {
+    /// Per-segment control point counts copied from the source path.
     pub num_control_points: Vec<u8>,
+    /// Gradients for each path control point in order.
     pub points: Vec<Vec2>,
+    /// Optional gradients for per-point stroke thickness.
     pub thickness: Option<Vec<f32>>,
+    /// Whether the path is closed.
     pub is_closed: bool,
+    /// Whether distance approximation was enabled for the path.
     pub use_distance_approx: bool,
 }
 
 /// diffvg-compatible shape geometry gradients.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiffvgShapeGeometry {
-    Circle { center: Vec2, radius: f32 },
-    Ellipse { center: Vec2, radius: Vec2 },
-    Rect { min: Vec2, max: Vec2 },
-    Path { path: DiffvgPathGrad },
+    /// Circle geometry gradients.
+    Circle {
+        /// Gradient with respect to the circle center (shape local).
+        center: Vec2,
+        /// Gradient with respect to the circle radius.
+        radius: f32,
+    },
+    /// Ellipse geometry gradients.
+    Ellipse {
+        /// Gradient with respect to the ellipse center (shape local).
+        center: Vec2,
+        /// Gradient with respect to the ellipse radii.
+        radius: Vec2,
+    },
+    /// Rectangle geometry gradients.
+    Rect {
+        /// Gradient with respect to the rectangle min corner (shape local).
+        min: Vec2,
+        /// Gradient with respect to the rectangle max corner (shape local).
+        max: Vec2,
+    },
+    /// Path geometry gradients with diffvg metadata.
+    Path {
+        /// Path gradients and metadata in diffvg layout.
+        path: DiffvgPathGrad,
+    },
 }
 
 /// diffvg-compatible shape gradients (includes per-shape transform for diffvg-rs).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffvgShapeGrad {
+    /// Geometry gradients in diffvg layout.
     pub geometry: DiffvgShapeGeometry,
+    /// Gradient with respect to the per-shape transform (diffvg-rs extension).
     pub transform: Mat3,
+    /// Gradient with respect to the base stroke width.
     pub stroke_width: f32,
 }
 
 /// diffvg-compatible shape group gradients.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffvgShapeGroupGrad {
+    /// Gradient with respect to the group shape-to-canvas transform.
     pub shape_to_canvas: Mat3,
+    /// Optional fill paint gradients.
     pub fill: Option<DPaint>,
+    /// Optional stroke paint gradients.
     pub stroke: Option<DPaint>,
 }
 
 /// diffvg-compatible scene gradient layout (for bindings/ABI parity).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiffvgSceneGrad {
+    /// Per-shape gradients in diffvg layout.
     pub shapes: Vec<DiffvgShapeGrad>,
+    /// Per-shape-group gradients in diffvg layout.
     pub shape_groups: Vec<DiffvgShapeGroupGrad>,
+    /// Reconstruction filter gradients.
     pub filter: DFilter,
+    /// Gradient with respect to the constant background color.
     pub background: Color,
+    /// Optional gradients for the background image (RGBA per pixel).
     pub background_image: Option<Vec<f32>>,
+    /// Optional gradients for per-pixel translation (x, y per pixel).
     pub translation: Option<Vec<f32>>,
 }
 
 impl SceneGrad {
     /// Convert gradients into a diffvg-compatible layout (with path metadata).
+    ///
+    /// Path metadata (control point counts, closure, and distance approximation)
+    /// are copied from the provided scene, and per-point buffers are resized to
+    /// match the source path lengths.
     pub fn to_diffvg_layout(&self, scene: &Scene) -> DiffvgSceneGrad {
         let mut shapes = Vec::with_capacity(self.shapes.len());
         for (idx, d_shape) in self.shapes.iter().enumerate() {
