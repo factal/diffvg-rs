@@ -1,5 +1,6 @@
 //! Tile binning helpers for GPU rendering.
 
+/// Integer ceil division with a zero-divisor guard.
 pub(crate) fn div_ceil(value: u32, divisor: u32) -> u32 {
     if divisor == 0 {
         return 0;
@@ -7,6 +8,7 @@ pub(crate) fn div_ceil(value: u32, divisor: u32) -> u32 {
     (value + divisor - 1) / divisor
 }
 
+/// Sort tile entry IDs in-place for each tile range defined by `offsets`.
 pub(crate) fn sort_tile_entries(entries: &mut [u32], offsets: &[u32], num_tiles: usize) {
     if entries.is_empty() || offsets.is_empty() {
         return;
@@ -24,6 +26,7 @@ pub(crate) fn sort_tile_entries(entries: &mut [u32], offsets: &[u32], num_tiles:
     }
 }
 
+/// Build a tile order sorted by descending entry count for load balancing.
 pub(crate) fn build_tile_order(tile_counts: &[u32], num_tiles: u32) -> Vec<u32> {
     let mut order = (0..num_tiles).collect::<Vec<_>>();
     order.sort_by(|a, b| {

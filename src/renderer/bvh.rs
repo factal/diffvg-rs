@@ -6,13 +6,17 @@ use crate::path_utils::bounds_from_points;
 use super::constants::{BVH_LEAF_SIZE, BVH_NONE};
 use super::path::CurveSegment;
 
+/// Axis-aligned bounds used for BVH construction and packing.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct Bounds {
+    /// Minimum corner.
     pub(crate) min: Vec2,
+    /// Maximum corner.
     pub(crate) max: Vec2,
 }
 
 impl Bounds {
+    /// Return an empty bounds that can be grown via `include`.
     pub(crate) fn empty() -> Self {
         Self {
             min: Vec2::new(f32::INFINITY, f32::INFINITY),
@@ -20,30 +24,41 @@ impl Bounds {
         }
     }
 
+    /// Expand this bounds to include another.
     pub(crate) fn include(&mut self, other: Bounds) {
         self.min = self.min.min(other.min);
         self.max = self.max.max(other.max);
     }
 
+    /// Center point of the bounds.
     pub(crate) fn center(&self) -> Vec2 {
         (self.min + self.max) * 0.5
     }
 
+    /// Extent (max - min) of the bounds.
     pub(crate) fn extent(&self) -> Vec2 {
         self.max - self.min
     }
 }
 
+/// CPU-side BVH node used for packing GPU traversal data.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct BvhNode {
+    /// Node bounds covering all child items.
     pub(crate) bounds: Bounds,
+    /// Index of the left child, or `BVH_NONE` for leaves.
     pub(crate) left: u32,
+    /// Index of the right child, or `BVH_NONE` for leaves.
     pub(crate) right: u32,
+    /// Skip pointer for iterative traversal on the GPU.
     pub(crate) skip: u32,
+    /// Start index into the leaf index array.
     pub(crate) start: u32,
+    /// Number of items in the leaf (0 for interior nodes).
     pub(crate) count: u32,
 }
 
+/// Append a per-group BVH and return `[node_offset, node_count, index_offset, index_count]`.
 pub(crate) fn append_group_bvh(
     group_shape_indices: &[u32],
     shape_bounds_list: &[Option<Bounds>],
@@ -92,6 +107,7 @@ pub(crate) fn append_group_bvh(
     [node_offset, node_count, index_offset, index_count]
 }
 
+/// Append a per-path BVH and return `[node_offset, node_count, index_offset, index_count]`.
 pub(crate) fn append_path_bvh(
     curve_segments: &[CurveSegment],
     curve_offset: u32,

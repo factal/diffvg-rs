@@ -41,8 +41,11 @@ impl Default for RenderOptions {
 /// RGBA image in linear color space.
 #[derive(Debug, Clone)]
 pub struct Image {
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Linear RGBA pixels, row-major, length = width * height * 4.
     pub pixels: Vec<f32>,
 }
 
@@ -67,8 +70,11 @@ impl Image {
 /// Signed distance field image for the current scene.
 #[derive(Debug, Clone)]
 pub struct SdfImage {
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Signed distance values, row-major, length = width * height.
     pub values: Vec<f32>,
 }
 

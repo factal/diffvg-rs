@@ -4,6 +4,7 @@ use crate::distance::{compute_distance_bvh, is_inside_bvh, DistanceOptions, Scen
 use crate::math::Vec2;
 use crate::scene::Scene;
 
+/// Ensure a float buffer is non-empty by inserting a single filler value.
 pub(crate) fn ensure_nonempty(mut data: Vec<f32>, filler: f32) -> Vec<f32> {
     if data.is_empty() {
         data.push(filler);
@@ -11,6 +12,7 @@ pub(crate) fn ensure_nonempty(mut data: Vec<f32>, filler: f32) -> Vec<f32> {
     data
 }
 
+/// Ensure a u32 buffer is non-empty by inserting a single filler value.
 pub(crate) fn ensure_nonempty_u32(mut data: Vec<u32>, filler: u32) -> Vec<u32> {
     if data.is_empty() {
         data.push(filler);
@@ -18,6 +20,7 @@ pub(crate) fn ensure_nonempty_u32(mut data: Vec<u32>, filler: u32) -> Vec<u32> {
     data
 }
 
+/// Compute a signed distance at `pt` using the BVH-accelerated scene query.
 pub(crate) fn sample_distance(scene: &Scene, bvh: &SceneBvh, pt: Vec2, options: DistanceOptions) -> f32 {
     let mut best_dist = f32::INFINITY;
     let mut best_group = None;

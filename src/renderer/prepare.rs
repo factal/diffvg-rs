@@ -16,50 +16,89 @@ use super::path::{
 };
 use super::types::{RenderError, RenderOptions};
 
+/// GPU-ready buffers and metadata produced by scene preprocessing.
 pub(crate) struct PreparedScene {
+    /// Packed per-shape metadata (kind, offsets, stroke params, curve info).
     pub(crate) shape_data: Vec<f32>,
+    /// Packed flattened stroke segments for path rasterization.
     pub(crate) segment_data: Vec<f32>,
+    /// Packed curve segments for distance evaluation.
     pub(crate) curve_data: Vec<f32>,
+    /// Per-shape bounds in group-local space, `[min.x, min.y, max.x, max.y]`.
     pub(crate) shape_bounds: Vec<f32>,
+    /// Per-group bounds in group-local space, `[min.x, min.y, max.x, max.y]`.
     pub(crate) group_bounds: Vec<f32>,
+    /// Packed group metadata (shape range, paint, fill rule, colors).
     pub(crate) group_data: Vec<f32>,
+    /// Packed `canvas_to_shape` transforms (2x3) per group.
     pub(crate) group_xform: Vec<f32>,
+    /// Packed `shape_to_canvas` transforms (2x3) per group.
     pub(crate) group_shape_xform: Vec<f32>,
+    /// Inverse average scale per group for shape-space AA.
     pub(crate) group_inv_scale: Vec<f32>,
+    /// Flattened shape indices per group stored as `f32`.
     pub(crate) group_shapes: Vec<f32>,
+    /// Packed inverse per-shape transforms (2x3).
     pub(crate) shape_xform: Vec<f32>,
+    /// BVH node bounds for group-local shapes.
     pub(crate) group_bvh_bounds: Vec<f32>,
+    /// BVH node data for group-local shapes.
     pub(crate) group_bvh_nodes: Vec<u32>,
+    /// BVH index array mapping nodes to shape indices.
     pub(crate) group_bvh_indices: Vec<u32>,
+    /// BVH metadata per group (node/index offsets and counts).
     pub(crate) group_bvh_meta: Vec<u32>,
+    /// BVH node bounds for path curve segments.
     pub(crate) path_bvh_bounds: Vec<f32>,
+    /// BVH node data for path curve segments.
     pub(crate) path_bvh_nodes: Vec<u32>,
+    /// BVH index array mapping nodes to curve segment indices.
     pub(crate) path_bvh_indices: Vec<u32>,
+    /// BVH metadata per path (node/index offsets and counts).
     pub(crate) path_bvh_meta: Vec<u32>,
+    /// Packed gradient headers.
     pub(crate) gradient_data: Vec<f32>,
+    /// Gradient stop offsets.
     pub(crate) stop_offsets: Vec<f32>,
+    /// Gradient stop colors in RGBA.
     pub(crate) stop_colors: Vec<f32>,
+    /// Number of groups in the scene.
     pub(crate) num_groups: u32,
 }
 
 #[derive(Debug)]
+/// Per-shape packed data produced during preprocessing.
 pub(crate) struct PreparedShape {
+    /// Shape kind identifier expected by GPU kernels.
     pub(crate) kind: u32,
+    /// Offset into the flattened stroke segment buffer.
     pub(crate) seg_offset: u32,
+    /// Number of flattened stroke segments.
     pub(crate) seg_count: u32,
+    /// Offset into the curve segment buffer.
     pub(crate) curve_offset: u32,
+    /// Number of curve segments.
     pub(crate) curve_count: u32,
+    /// Stroke width in shape space.
     pub(crate) stroke_width: f32,
+    /// Packed shape params plus stroke metadata.
     pub(crate) params: [f32; 8],
+    /// Whether distance approximation should be used.
     pub(crate) use_distance_approx: bool,
+    /// Axis-aligned bounds in shape space, if any.
     pub(crate) bounds: Option<(Vec2, Vec2)>,
+    /// Maximum radius used for stroke padding.
     pub(crate) max_stroke_radius: f32,
 }
 
 #[derive(Debug, Copy, Clone)]
+/// Packed paint metadata for a group fill or stroke.
 struct PaintPack {
+    /// Paint kind: 0 = none, 1 = solid, 2 = linear, 3 = radial.
     kind: u32,
+    /// Index into the gradient buffer when applicable.
     gradient_index: u32,
+    /// Solid color value or fallback.
     color: Color,
 }
 
@@ -71,6 +110,7 @@ fn apply_stroke_meta(params: &mut [f32; 8], shape: &Shape, has_thickness: bool) 
     params[7] = shape.stroke_miter_limit;
 }
 
+/// Preprocess a scene into GPU-ready buffers and BVH metadata.
 pub(crate) fn prepare_scene(scene: &Scene, options: &RenderOptions) -> Result<PreparedScene, RenderError> {
     let mut segments = Vec::new();
     let mut curves = Vec::new();

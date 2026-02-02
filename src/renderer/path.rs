@@ -6,20 +6,31 @@ use crate::path_utils::path_point_radius;
 
 use super::constants::{CURVE_STRIDE, SEGMENT_STRIDE};
 
+/// Stroke curve segment with optional varying radius.
 #[derive(Debug, Copy, Clone)]
 pub(crate) struct CurveSegment {
+    /// Segment kind: 0 = line, 1 = quad, 2 = cubic.
     pub(crate) kind: u32,
+    /// Start point.
     pub(crate) p0: Vec2,
+    /// First control point (or end point for lines).
     pub(crate) p1: Vec2,
+    /// Second control point (or end point for lines/quads).
     pub(crate) p2: Vec2,
+    /// End point.
     pub(crate) p3: Vec2,
+    /// Radius at `p0`.
     pub(crate) r0: f32,
+    /// Radius at `p1`.
     pub(crate) r1: f32,
+    /// Radius at `p2`.
     pub(crate) r2: f32,
+    /// Radius at `p3`.
     pub(crate) r3: f32,
 }
 
 impl CurveSegment {
+    /// Build a line segment with per-end radii.
     pub(crate) fn line(p0: Vec2, p1: Vec2, r0: f32, r1: f32) -> Self {
         Self {
             kind: 0,
@@ -34,6 +45,7 @@ impl CurveSegment {
         }
     }
 
+    /// Build a quadratic segment with per-point radii.
     pub(crate) fn quad(p0: Vec2, p1: Vec2, p2: Vec2, r0: f32, r1: f32, r2: f32) -> Self {
         Self {
             kind: 1,
@@ -48,6 +60,7 @@ impl CurveSegment {
         }
     }
 
+    /// Build a cubic segment with per-point radii.
     pub(crate) fn cubic(
         p0: Vec2,
         p1: Vec2,
@@ -72,6 +85,7 @@ impl CurveSegment {
     }
 }
 
+/// Append curve segments and return `(offset, count)` for packing.
 pub(crate) fn push_curve_segments(
     curves: &mut Vec<CurveSegment>,
     new_segments: &[CurveSegment],
@@ -82,6 +96,7 @@ pub(crate) fn push_curve_segments(
     (offset, count)
 }
 
+/// Expand a path into per-segment curve data with interpolated stroke radii.
 pub(crate) fn path_to_curve_segments(path: &Path, stroke_width: f32) -> Vec<CurveSegment> {
     let mut out = Vec::new();
     if path.is_empty() {
@@ -157,6 +172,7 @@ pub(crate) fn path_to_curve_segments(path: &Path, stroke_width: f32) -> Vec<Curv
     out
 }
 
+/// Pack stroke segments into the GPU float layout.
 pub(crate) fn segments_to_f32(segments: &[StrokeSegment]) -> Vec<f32> {
     let mut data = Vec::with_capacity(segments.len() * SEGMENT_STRIDE);
     for seg in segments {
@@ -176,6 +192,7 @@ pub(crate) fn segments_to_f32(segments: &[StrokeSegment]) -> Vec<f32> {
     data
 }
 
+/// Pack curve segments into the GPU float layout.
 pub(crate) fn curve_segments_to_f32(curves: &[CurveSegment]) -> Vec<f32> {
     let mut data = Vec::with_capacity(curves.len() * CURVE_STRIDE);
     for seg in curves {
