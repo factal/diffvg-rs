@@ -131,6 +131,27 @@ impl SceneGrad {
             translation,
         }
     }
+
+    /// Accumulate another gradient into this one (element-wise add).
+    pub fn accumulate_from(&mut self, other: &SceneGrad) {
+        for (dst_shape, src_shape) in self.shapes.iter_mut().zip(other.shapes.iter()) {
+            dst_shape.stroke_width += src_shape.stroke_width;
+            add_mat3(&mut dst_shape.transform, src_shape.transform);
+            add_shape_geometry(&mut dst_shape.geometry, &src_shape.geometry);
+        }
+
+        for (dst_group, src_group) in self.shape_groups.iter_mut().zip(other.shape_groups.iter()) {
+            add_mat3(&mut dst_group.shape_to_canvas, src_group.shape_to_canvas);
+            add_paint_option(&mut dst_group.fill, &src_group.fill);
+            add_paint_option(&mut dst_group.stroke, &src_group.stroke);
+        }
+
+        self.filter.radius += other.filter.radius;
+        add_color_in_place(&mut self.background, other.background);
+
+        add_slice_option(&mut self.background_image, &other.background_image);
+        add_slice_option(&mut self.translation, &other.translation);
+    }
 }
 
 fn zero_mat3() -> Mat3 {
@@ -194,6 +215,111 @@ fn zero_paint(paint: &Paint) -> DPaint {
                 })
                 .collect(),
         }),
+    }
+}
+
+fn add_mat3(dst: &mut Mat3, src: Mat3) {
+    for r in 0..3 {
+        for c in 0..3 {
+            dst.m[r][c] += src.m[r][c];
+        }
+    }
+}
+
+fn add_vec2(dst: &mut Vec2, src: Vec2) {
+    dst.x += src.x;
+    dst.y += src.y;
+}
+
+fn add_color_in_place(dst: &mut Color, src: Color) {
+    dst.r += src.r;
+    dst.g += src.g;
+    dst.b += src.b;
+    dst.a += src.a;
+}
+
+fn add_shape_geometry(dst: &mut DShapeGeometry, src: &DShapeGeometry) {
+    match (dst, src) {
+        (DShapeGeometry::Circle { center, radius }, DShapeGeometry::Circle { center: src_center, radius: src_radius }) => {
+            add_vec2(center, *src_center);
+            *radius += *src_radius;
+        }
+        (DShapeGeometry::Ellipse { center, radius }, DShapeGeometry::Ellipse { center: src_center, radius: src_radius }) => {
+            add_vec2(center, *src_center);
+            add_vec2(radius, *src_radius);
+        }
+        (DShapeGeometry::Rect { min, max }, DShapeGeometry::Rect { min: src_min, max: src_max }) => {
+            add_vec2(min, *src_min);
+            add_vec2(max, *src_max);
+        }
+        (DShapeGeometry::Path { points, thickness }, DShapeGeometry::Path { points: src_points, thickness: src_thickness }) => {
+            let count = points.len().min(src_points.len());
+            for i in 0..count {
+                points[i].x += src_points[i].x;
+                points[i].y += src_points[i].y;
+            }
+            if let Some(dst_thickness) = thickness.as_mut() {
+                if let Some(src_vals) = src_thickness.as_ref() {
+                    let len = dst_thickness.len().min(src_vals.len());
+                    for i in 0..len {
+                        dst_thickness[i] += src_vals[i];
+                    }
+                }
+            } else if let Some(src_vals) = src_thickness.as_ref() {
+                *thickness = Some(src_vals.clone());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_paint_option(dst: &mut Option<DPaint>, src: &Option<DPaint>) {
+    if let Some(dst_paint) = dst.as_mut() {
+        if let Some(src_paint) = src.as_ref() {
+            add_paint(dst_paint, src_paint);
+        }
+    } else if let Some(src_paint) = src.as_ref() {
+        *dst = Some(src_paint.clone());
+    }
+}
+
+fn add_paint(dst: &mut DPaint, src: &DPaint) {
+    match (dst, src) {
+        (DPaint::Solid(dst_color), DPaint::Solid(src_color)) => {
+            add_color_in_place(dst_color, *src_color);
+        }
+        (DPaint::LinearGradient(dst_grad), DPaint::LinearGradient(src_grad)) => {
+            add_vec2(&mut dst_grad.start, src_grad.start);
+            add_vec2(&mut dst_grad.end, src_grad.end);
+            let count = dst_grad.stops.len().min(src_grad.stops.len());
+            for i in 0..count {
+                dst_grad.stops[i].offset += src_grad.stops[i].offset;
+                add_color_in_place(&mut dst_grad.stops[i].color, src_grad.stops[i].color);
+            }
+        }
+        (DPaint::RadialGradient(dst_grad), DPaint::RadialGradient(src_grad)) => {
+            add_vec2(&mut dst_grad.center, src_grad.center);
+            add_vec2(&mut dst_grad.radius, src_grad.radius);
+            let count = dst_grad.stops.len().min(src_grad.stops.len());
+            for i in 0..count {
+                dst_grad.stops[i].offset += src_grad.stops[i].offset;
+                add_color_in_place(&mut dst_grad.stops[i].color, src_grad.stops[i].color);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_slice_option(dst: &mut Option<Vec<f32>>, src: &Option<Vec<f32>>) {
+    if let Some(dst_vals) = dst.as_mut() {
+        if let Some(src_vals) = src.as_ref() {
+            let len = dst_vals.len().min(src_vals.len());
+            for i in 0..len {
+                dst_vals[i] += src_vals[i];
+            }
+        }
+    } else if let Some(src_vals) = src.as_ref() {
+        *dst = Some(src_vals.clone());
     }
 }
 

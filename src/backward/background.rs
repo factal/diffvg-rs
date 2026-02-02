@@ -21,7 +21,7 @@ pub(super) fn sample_background(scene: &Scene, pixel_index: usize) -> Vec4 {
     }
 }
 
-pub(super) fn finalize_background_gradients(scene: &Scene, grads: &mut SceneGrad) {
+pub(crate) fn finalize_background_gradients(scene: &Scene, grads: &mut SceneGrad) {
     if let Some(image) = scene.background_image.as_ref() {
         if let Some(d_bg) = grads.background_image.as_mut() {
             for (i, chunk) in d_bg.chunks_mut(4).enumerate() {

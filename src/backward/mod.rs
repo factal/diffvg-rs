@@ -1,7 +1,7 @@
 //! CPU backward rendering path for diffvg-rs.
 
-mod background;
-mod boundary;
+pub(crate) mod background;
+pub(crate) mod boundary;
 mod distance;
 mod filters;
 mod math;

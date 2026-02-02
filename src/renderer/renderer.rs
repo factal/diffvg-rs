@@ -12,6 +12,7 @@ use cubecl::prelude::*;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 
 use super::constants::TILE_SIZE;
+use super::backward_gpu::render_backward_gpu;
 use super::prepare::prepare_scene;
 use super::rng::Pcg32;
 use super::tiles::{build_tile_order, div_ceil, sort_tile_entries};
@@ -545,8 +546,8 @@ impl Renderer {
         d_render_image: Option<&[f32]>,
         d_sdf_image: Option<&[f32]>,
     ) -> Result<SceneGrad, RenderError> {
-        let _ = self;
-        crate::backward::render_backward(
+        render_backward_gpu(
+            &self.device,
             scene,
             options,
             backward_options,

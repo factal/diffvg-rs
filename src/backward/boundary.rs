@@ -16,7 +16,7 @@ use super::types::{
     BoundaryData, BoundarySample, EdgeQuery, PathBoundaryData, PathCdf, ShapeCdf,
 };
 
-pub(super) fn boundary_sampling(
+pub(crate) fn boundary_sampling(
     scene: &Scene,
     bvh: &SceneBvh,
     samples_x: u32,
