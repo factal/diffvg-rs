@@ -1,7 +1,11 @@
+//! GPU distance and closest-point helpers for shape queries.
+
 use cubecl::prelude::*;
 use crate::gpu::constants::*;
 use super::{math::*, curves::*};
 
+/// Compute Euclidean distance from (px, py) to an axis-aligned bounds.
+/// Returns 0 when the point is inside or on the bounds.
 #[cube]
 pub(super) fn bounds_distance(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> f32 {
     let zero = f32::new(0.0);
@@ -10,16 +14,21 @@ pub(super) fn bounds_distance(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Check whether (px, py) lies inside or on an axis-aligned bounds.
 #[cube]
 pub(super) fn bounds_contains(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> bool {
     px >= min_x && px <= max_x && py >= min_y && py <= max_y
 }
 
+/// Conservative rightward-ray test against bounds for winding queries.
+/// Ignores `min_x`, only checks the y-range and `max_x`.
 #[cube]
 pub(super) fn ray_intersects_bounds(_min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> bool {
     !(py < min_y || py > max_y || px > max_x)
 }
 
+/// Closest point on a circle boundary to (px, py).
+/// If the point is at the center, picks (cx + radius, cy).
 #[cube]
 pub(super) fn closest_point_circle(cx: f32, cy: f32, radius: f32, px: f32, py: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -37,6 +46,8 @@ pub(super) fn closest_point_circle(cx: f32, cy: f32, radius: f32, px: f32, py: f
     out
 }
 
+/// Closest point on an axis-aligned rectangle boundary to (px, py).
+/// Inside points snap to the nearest edge; outside points clamp to bounds.
 #[cube]
 pub(super) fn closest_point_rect(min_x: f32, min_y: f32, max_x: f32, max_y: f32, px: f32, py: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -66,6 +77,8 @@ pub(super) fn closest_point_rect(min_x: f32, min_y: f32, max_x: f32, max_y: f32,
     out
 }
 
+/// Closest point on an axis-aligned ellipse boundary to (px, py).
+/// Handles degenerate radii and uses Newton refinement in the first quadrant.
 #[cube]
 pub(super) fn closest_point_ellipse(cx: f32, cy: f32, rx_in: f32, ry_in: f32, px: f32, py: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -123,6 +136,8 @@ pub(super) fn closest_point_ellipse(cx: f32, cy: f32, rx_in: f32, ry_in: f32, px
     out
 }
 
+/// Scan all curves in a path to find the closest point to (px, py).
+/// Writes local position, segment index, and param t; returns 1 if found.
 #[cube]
 pub(super) fn closest_point_path(
     curve_data: &Array<f32>,
@@ -213,6 +228,8 @@ pub(super) fn closest_point_path(
     result
 }
 
+/// Dispatch to shape-specific closest-point routines in shape space.
+/// Writes local position, segment index, and param t; returns 1 if valid.
 #[cube]
 pub(super) fn closest_point_shape(
     shape_data: &Array<f32>,
@@ -272,6 +289,10 @@ pub(super) fn closest_point_shape(
     result
 }
 
+/// Find the closest point in a group to a canvas-space sample.
+/// Uses group/shape transforms and optional BVH traversal.
+/// Outputs local point, distance, shape id, segment index, and param t.
+/// Search radius is capped by `max_radius`; returns 0 if no hit within it.
 #[cube]
 pub(super) fn compute_distance_group(
     shape_data: &Array<f32>,

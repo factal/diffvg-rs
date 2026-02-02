@@ -1,6 +1,9 @@
+//! Curve distance, winding, and root helpers for GPU SDF evaluation.
+
 use cubecl::prelude::*;
 use super::math::*;
 
+/// Euclidean distance between a point and a target location.
 #[cube]
 pub(super) fn distance_to_point(px: f32, py: f32, ax: f32, ay: f32) -> f32 {
     let dx = px - ax;
@@ -8,6 +11,7 @@ pub(super) fn distance_to_point(px: f32, py: f32, ax: f32, ay: f32) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
+/// Distance from a point to a segment, returning [dist, t] with t in [0, 1].
 #[cube]
 pub(super) fn distance_to_segment_with_t(
     px: f32,
@@ -38,6 +42,7 @@ pub(super) fn distance_to_segment_with_t(
     out
 }
 
+/// Distance from a point to a segment with the projection clamped to the segment.
 #[cube]
 pub(super) fn distance_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     let zero = f32::new(0.0);
@@ -64,6 +69,7 @@ pub(super) fn distance_to_segment(px: f32, py: f32, ax: f32, ay: f32, bx: f32, b
     dist_sq.sqrt()
 }
 
+/// Update winding or crossings for a line segment at the horizontal ray (px, py).
 #[cube]
 pub(super) fn winding_and_crossings_line(
     px: f32,
@@ -93,6 +99,7 @@ pub(super) fn winding_and_crossings_line(
     }
 }
 
+/// Update winding or crossings for a quadratic Bezier at the horizontal ray (px, py).
 #[cube]
 pub(super) fn winding_and_crossings_quadratic(
     px: f32,
@@ -135,6 +142,7 @@ pub(super) fn winding_and_crossings_quadratic(
     }
 }
 
+/// Update winding or crossings for a cubic Bezier at the horizontal ray (px, py).
 #[cube]
 pub(super) fn winding_and_crossings_cubic(
     px: f32,
@@ -182,6 +190,7 @@ pub(super) fn winding_and_crossings_cubic(
     }
 }
 
+/// Closest point on a quadratic Bezier, returning [dist, t].
 #[cube]
 pub(super) fn closest_point_quadratic_with_t(
     px: f32,
@@ -246,6 +255,7 @@ pub(super) fn closest_point_quadratic_with_t(
     out
 }
 
+/// Minimum distance from a point to a quadratic Bezier.
 #[cube]
 pub(super) fn distance_to_quadratic(
     px: f32,
@@ -303,6 +313,7 @@ pub(super) fn distance_to_quadratic(
     min_dist
 }
 
+/// Minimum distance from a point to a cubic Bezier, optionally using approximation.
 #[cube]
 pub(super) fn distance_to_cubic(
     px: f32,
@@ -470,6 +481,7 @@ pub(super) fn distance_to_cubic(
     min_dist
 }
 
+/// Approximate distance to a cubic Bezier, returning [dist, t].
 #[cube]
 pub(super) fn distance_to_cubic_approx_with_t(
     px: f32,
@@ -521,6 +533,7 @@ pub(super) fn distance_to_cubic_approx_with_t(
     out
 }
 
+/// Closest point on a cubic Bezier, returning [dist, t].
 #[cube]
 pub(super) fn closest_point_cubic_with_t(
     px: f32,
@@ -694,6 +707,7 @@ pub(super) fn closest_point_cubic_with_t(
     out
 }
 
+/// Approximate distance to a cubic Bezier using polyline sampling.
 #[cube]
 pub(super) fn distance_to_cubic_approx(
     px: f32,
@@ -735,11 +749,13 @@ pub(super) fn distance_to_cubic_approx(
     min_dist
 }
 
+/// Evaluate a quintic polynomial with implicit leading 1: ((((t + b)t + c)t + d)t + e)t + f.
 #[cube]
 pub(super) fn eval_quintic(t: f32, b: f32, c: f32, d: f32, e: f32, f: f32) -> f32 {
     ((((t + b) * t + c) * t + d) * t + e) * t + f
 }
 
+/// Evaluate the derivative of the quintic used by eval_quintic.
 #[cube]
 pub(super) fn eval_quintic_deriv(t: f32, b: f32, c: f32, d: f32, e: f32) -> f32 {
     (((f32::new(5.0) * t + f32::new(4.0) * b) * t + f32::new(3.0) * c) * t
@@ -748,6 +764,7 @@ pub(super) fn eval_quintic_deriv(t: f32, b: f32, c: f32, d: f32, e: f32) -> f32 
         + e
 }
 
+/// Approximate closest point on a quadratic Bezier, returning [x, y, t].
 #[cube]
 pub(super) fn quadratic_closest_pt_approx(
     px: f32,
@@ -814,11 +831,13 @@ pub(super) fn quadratic_closest_pt_approx(
     out
 }
 
+/// 2D determinant (cross product) of two vectors.
 #[cube]
 pub(super) fn det2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ax * by - ay * bx
 }
 
+/// Solve a quadratic a*t^2 + b*t + c = 0, returning [count, t0, t1, 0].
 #[cube]
 pub(super) fn solve_quadratic(a: f32, b: f32, c: f32) -> Line<f32> {
     let mut out = Line::empty(4usize);
@@ -850,6 +869,7 @@ pub(super) fn solve_quadratic(a: f32, b: f32, c: f32) -> Line<f32> {
     out
 }
 
+/// Solve a cubic a*t^3 + b*t^2 + c*t + d = 0, returning [count, r0, r1, r2].
 #[cube]
 pub(super) fn solve_cubic(a: f32, b: f32, c: f32, d: f32) -> Line<f32> {
     let mut out = Line::empty(4usize);
@@ -901,6 +921,7 @@ pub(super) fn solve_cubic(a: f32, b: f32, c: f32, d: f32) -> Line<f32> {
     out
 }
 
+/// Real cube root that preserves sign for negative inputs.
 #[cube]
 pub(super) fn cbrt(x: f32) -> f32 {
     let zero = f32::new(0.0);

@@ -1,7 +1,12 @@
+//! GPU sampling helpers for paint evaluation and reconstruction filters.
+
 use cubecl::prelude::*;
 use crate::gpu::constants::*;
 use super::math::*;
 
+/// Resolve paint RGBA at (px, py) in canvas space.
+/// - `kind` selects solid vs gradient; `gradient_index` selects the gradient entry.
+/// - Returns a 4-wide `Line<f32>` in RGBA order.
 #[cube]
 pub(super) fn paint_color(
     kind: u32,
@@ -35,6 +40,9 @@ pub(super) fn paint_color(
     out
 }
 
+/// Sample a linear or radial gradient at (px, py) in canvas space.
+/// Uses packed `gradient_data`, `stop_offsets`, and `stop_colors` tables.
+/// Returns a 4-wide `Line<f32>` in RGBA order (zeros if no stops).
 #[cube]
 pub(super) fn sample_gradient(
     gradient_data: &Array<f32>,
@@ -129,6 +137,8 @@ pub(super) fn sample_gradient(
     out
 }
 
+/// Compute reconstruction filter weight for an offset (dx, dy) and radius.
+/// Returns 0 outside the filter support; `radius <= 0` yields 1.
 #[cube]
 pub(super) fn filter_weight(filter_type: u32, dx: f32, dy: f32, radius: f32) -> f32 {
     let zero = f32::new(0.0);

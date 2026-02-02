@@ -1,7 +1,11 @@
+//! GPU tile binning kernels for group-level culling and scheduling.
+
 use cubecl::prelude::*;
 use crate::gpu::constants::*;
 use super::math::*;
 
+/// Per-group pass to count how many tiles each group touches.
+/// Transforms group bounds to canvas space and atomically increments `tile_counts`.
 #[cube(launch_unchecked)]
 pub(crate) fn bin_tiles_count(
     group_bounds: &Array<f32>,
@@ -107,6 +111,8 @@ pub(crate) fn bin_tiles_count(
     }
 }
 
+/// Initialize prefix-sum input as an offsets array.
+/// Writes `offsets[0]=0` and `offsets[i+1]=tile_counts[i]`.
 #[cube(launch_unchecked)]
 pub(crate) fn init_tile_offsets(
     tile_counts: &Array<Atomic<u32>>,
@@ -124,6 +130,8 @@ pub(crate) fn init_tile_offsets(
     offsets[idx + 1] = tile_counts[idx].load();
 }
 
+/// Single scan step for tile offsets with the given stride.
+/// Computes `offsets_out[i]=offsets_in[i]+offsets_in[i-stride]` when in range.
 #[cube(launch_unchecked)]
 pub(crate) fn scan_tile_offsets(
     offsets_in: &Array<u32>,
@@ -144,6 +152,7 @@ pub(crate) fn scan_tile_offsets(
     }
 }
 
+/// Initialize atomic cursors from the computed tile offsets.
 #[cube(launch_unchecked)]
 pub(crate) fn init_tile_cursor(
     tile_offsets: &Array<u32>,
@@ -158,6 +167,8 @@ pub(crate) fn init_tile_cursor(
     tile_cursor[idx].fetch_add(value);
 }
 
+/// Per-group pass to write group ids into tile entries.
+/// Uses `tile_cursor` to reserve write positions per tile.
 #[cube(launch_unchecked)]
 pub(crate) fn bin_tiles_write(
     group_bounds: &Array<f32>,
@@ -266,6 +277,8 @@ pub(crate) fn bin_tiles_write(
     }
 }
 
+/// In-place per-tile insertion sort of group ids for deterministic ordering.
+/// No-op for tiles with zero or one entry.
 #[cube(launch_unchecked)]
 pub(crate) fn sort_tile_entries(
     tile_offsets: &Array<u32>,

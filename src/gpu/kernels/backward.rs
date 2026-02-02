@@ -8,6 +8,7 @@ const MAT3_STRIDE: usize = 4;
 const MAT3_SIZE: usize = 12;
 const AFFINE_SIZE: usize = 8;
 
+/// Backprop for affine point transform; accumulates grads for matrix and point.
 #[cube]
 pub(super) fn d_xform_pt_affine(
     m00: f32,
@@ -35,6 +36,7 @@ pub(super) fn d_xform_pt_affine(
     d_pt[1] += d_out_x * m01 + d_out_y * m11;
 }
 
+/// Build a packed 3x3 matrix line (stride 4) from affine coefficients.
 #[cube]
 pub(super) fn mat3_from_affine(m00: f32, m01: f32, m02: f32, m10: f32, m11: f32, m12: f32) -> Line<f32> {
     let mut out = Line::empty(MAT3_SIZE);
@@ -53,6 +55,7 @@ pub(super) fn mat3_from_affine(m00: f32, m01: f32, m02: f32, m10: f32, m11: f32,
     out
 }
 
+/// Transpose a packed 3x3 matrix line.
 #[cube]
 pub(super) fn mat3_transpose(m: Line<f32>) -> Line<f32> {
     let mut out = Line::empty(MAT3_SIZE);
@@ -71,6 +74,7 @@ pub(super) fn mat3_transpose(m: Line<f32>) -> Line<f32> {
     out
 }
 
+/// Multiply two packed 3x3 matrices.
 #[cube]
 pub(super) fn mat3_mul(a: Line<f32>, b: Line<f32>) -> Line<f32> {
     let mut out = Line::empty(MAT3_SIZE);
@@ -111,6 +115,7 @@ pub(super) fn mat3_mul(a: Line<f32>, b: Line<f32>) -> Line<f32> {
     out
 }
 
+/// Scale a packed 3x3 matrix by a scalar.
 #[cube]
 pub(super) fn mat3_scale(m: Line<f32>, s: f32) -> Line<f32> {
     let mut out = Line::empty(MAT3_SIZE);
@@ -129,6 +134,7 @@ pub(super) fn mat3_scale(m: Line<f32>, s: f32) -> Line<f32> {
     out
 }
 
+/// Atomically add the 3x3 entries into an output buffer.
 #[cube]
 pub(super) fn atomic_add_mat3(out: &mut Array<Atomic<f32>>, base: usize, m: Line<f32>) {
     out[base].fetch_add(m[0]);
@@ -142,6 +148,7 @@ pub(super) fn atomic_add_mat3(out: &mut Array<Atomic<f32>>, base: usize, m: Line
     out[base + 8].fetch_add(m[10]);
 }
 
+/// Expand affine gradient (2x3) into a packed 3x3 gradient line.
 #[cube]
 pub(super) fn affine_grad_to_mat3(affine: Line<f32>) -> Line<f32> {
     let mut out = Line::empty(MAT3_SIZE);
@@ -162,12 +169,14 @@ pub(super) fn affine_grad_to_mat3(affine: Line<f32>) -> Line<f32> {
     out
 }
 
+/// Atomically add a vec2 into an output buffer.
 #[cube]
 pub(super) fn atomic_add_vec2(out: &mut Array<Atomic<f32>>, base: usize, x: f32, y: f32) {
     out[base].fetch_add(x);
     out[base + 1].fetch_add(y);
 }
 
+/// Atomically add a vec4 into an output buffer.
 #[cube]
 pub(super) fn atomic_add_vec4(out: &mut Array<Atomic<f32>>, base: usize, x: f32, y: f32, z: f32, w: f32) {
     out[base].fetch_add(x);
@@ -176,6 +185,7 @@ pub(super) fn atomic_add_vec4(out: &mut Array<Atomic<f32>>, base: usize, x: f32,
     out[base + 3].fetch_add(w);
 }
 
+/// Accumulate per-pixel translation gradient into the translation buffer.
 #[cube]
 pub(super) fn add_translation(d_translation: &mut Array<Atomic<f32>>, pixel_index: u32, dx: f32, dy: f32) {
     let base = (pixel_index * u32::new(2)) as usize;
@@ -183,6 +193,7 @@ pub(super) fn add_translation(d_translation: &mut Array<Atomic<f32>>, pixel_inde
     d_translation[base + 1].fetch_add(dy);
 }
 
+/// Accumulate background gradient into image or solid background based on flag.
 #[cube]
 pub(super) fn accumulate_background_grad(
     d_background: &mut Array<Atomic<f32>>,
@@ -202,6 +213,7 @@ pub(super) fn accumulate_background_grad(
     }
 }
 
+/// Map a point index with clamping or wrapping for closed paths.
 #[cube]
 pub(super) fn path_point_index(idx: u32, count: u32, is_closed: u32) -> u32 {
     let mut out = u32::new(0);
@@ -217,6 +229,7 @@ pub(super) fn path_point_index(idx: u32, count: u32, is_closed: u32) -> u32 {
     out
 }
 
+/// Convert a base segment id to an absolute point index using control counts.
 #[cube]
 pub(super) fn path_point_id(path_num_controls: &Array<u32>, ctrl_offset: u32, base_point_id: u32) -> u32 {
     let mut point_id = u32::new(0);
@@ -235,6 +248,7 @@ pub(super) fn path_point_id(path_num_controls: &Array<u32>, ctrl_offset: u32, ba
     point_id
 }
 
+/// Load an (x, y) point from packed path data.
 #[cube]
 pub(super) fn load_path_point(
     path_points: &Array<f32>,
@@ -248,6 +262,7 @@ pub(super) fn load_path_point(
     out
 }
 
+/// Atomically add a gradient contribution to a path point.
 #[cube]
 pub(super) fn add_path_point_grad(
     d_path_points: &mut Array<Atomic<f32>>,
@@ -261,6 +276,7 @@ pub(super) fn add_path_point_grad(
     d_path_points[base + 1].fetch_add(dy);
 }
 
+/// Distance from point to a segment, used for rectangle edges.
 #[cube]
 pub(super) fn rect_dist_to_seg(px: f32, py: f32, p0x: f32, p0y: f32, p1x: f32, p1y: f32) -> f32 {
     let vx = p1x - p0x;
@@ -282,6 +298,7 @@ pub(super) fn rect_dist_to_seg(px: f32, py: f32, p0x: f32, p0y: f32, p1x: f32, p
     }
 }
 
+/// Backprop closest-point gradients for a rectangle edge segment.
 #[cube]
 pub(super) fn rect_update_seg(
     px: f32,
@@ -332,6 +349,7 @@ pub(super) fn rect_update_seg(
     }
 }
 
+/// Backprop closest-point gradients for a rectangle boundary.
 #[cube]
 pub(super) fn d_closest_point_rect(
     min_x: f32,
@@ -398,6 +416,7 @@ pub(super) fn d_closest_point_rect(
     d_max[1] += d_rb[1];
 }
 
+/// Backprop closest-point gradients for an ellipse, including degenerate radii.
 #[cube]
 pub(super) fn d_closest_point_ellipse(
     cx: f32,
@@ -499,6 +518,7 @@ pub(super) fn d_closest_point_ellipse(
     }
 }
 
+/// Backprop closest-point gradients for a path segment (line, quad, cubic).
 #[cube]
 pub(super) fn d_closest_point_path(
     path_points: &Array<f32>,
@@ -779,6 +799,7 @@ pub(super) fn d_closest_point_path(
     }
 }
 
+/// Dispatch closest-point gradients based on shape kind.
 #[cube]
 pub(super) fn d_closest_point(
     shape_data: &Array<f32>,
@@ -888,6 +909,7 @@ pub(super) fn d_closest_point(
     }
 }
 
+/// Backprop distance from point to shape, including group and shape transforms.
 #[cube]
 pub(super) fn d_compute_distance(
     shape_data: &Array<f32>,
@@ -1113,6 +1135,7 @@ pub(super) fn d_compute_distance(
     }
 }
 
+/// Gather filtered d_render_image at a sample position with weight normalization.
 #[cube]
 pub(super) fn gather_d_color(
     filter_type: u32,
@@ -1163,6 +1186,7 @@ pub(super) fn gather_d_color(
     out
 }
 
+/// Backprop filter weight with respect to the filter radius.
 #[cube]
 pub(super) fn d_compute_filter_weight(
     filter_type: u32,
@@ -1219,6 +1243,7 @@ pub(super) fn d_compute_filter_weight(
     }
 }
 
+/// Accumulate filter-radius gradients from filtered color reconstruction.
 #[cube]
 pub(super) fn accumulate_filter_gradient(
     filter_type: u32,
@@ -1283,6 +1308,7 @@ pub(super) fn accumulate_filter_gradient(
     }
 }
 
+/// Backprop paint parameters (solid or gradient) from a color gradient.
 #[cube]
 pub(super) fn d_sample_paint(
     paint_kind: u32,
@@ -1498,6 +1524,7 @@ pub(super) fn d_sample_paint(
     let _ = solid_a;
 }
 
+/// Check if a point is inside a group fill using BVH and fill rule.
 #[cube]
 pub(super) fn fill_inside_group(
     shape_data: &Array<f32>,
@@ -1585,6 +1612,7 @@ pub(super) fn fill_inside_group(
     result
 }
 
+/// Backward color sampling without prefiltering; accumulates paint/background gradients.
 #[cube]
 pub(super) fn sample_color(
     shape_data: &Array<f32>,
@@ -1970,6 +1998,7 @@ pub(super) fn sample_color(
     out
 }
 
+/// Backward color sampling with prefiltering and distance-based coverage.
 #[cube]
 pub(super) fn sample_color_prefiltered(
     shape_data: &Array<f32>,
@@ -2531,6 +2560,7 @@ pub(super) fn sample_color_prefiltered(
     out
 }
 
+/// Backward SDF sampling; picks closest shape and propagates signed distance.
 #[cube]
 pub(super) fn sample_distance_sdf(
     shape_data: &Array<f32>,
@@ -2686,6 +2716,7 @@ pub(super) fn sample_distance_sdf(
     }
 }
 
+/// Kernel for color backward pass without prefiltering.
 #[cube(launch_unchecked)]
 pub(crate) fn render_backward_color_kernel(
     shape_data: &Array<f32>,
@@ -2849,6 +2880,7 @@ pub(crate) fn render_backward_color_kernel(
     );
 }
 
+/// Kernel for color backward pass with prefiltering and shape gradients.
 #[cube(launch_unchecked)]
 pub(crate) fn render_backward_color_prefilter_kernel(
     shape_data: &Array<f32>,
@@ -3038,6 +3070,7 @@ pub(crate) fn render_backward_color_prefilter_kernel(
     );
 }
 
+/// Kernel for SDF backward pass over samples.
 #[cube(launch_unchecked)]
 pub(crate) fn render_backward_sdf_kernel(
     shape_data: &Array<f32>,
@@ -3167,6 +3200,7 @@ pub(crate) fn render_backward_sdf_kernel(
     }
 }
 
+/// Combined kernel handling color and/or SDF gradients based on flags.
 #[cube(launch_unchecked)]
 pub(crate) fn render_backward_kernel(
     shape_data: &Array<f32>,

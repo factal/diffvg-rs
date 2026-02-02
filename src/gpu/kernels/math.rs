@@ -1,11 +1,15 @@
+//! GPU math helpers shared by CubeCL kernels.
+
 use cubecl::prelude::*;
 
+/// Smoothstep on the unit interval for signed distances in [-1, 1].
 #[cube]
 pub(super) fn smoothstep_unit(d: f32) -> f32 {
     let t = clamp01((d + f32::new(1.0)) * f32::new(0.5));
     t * t * (f32::new(3.0) - f32::new(2.0) * t)
 }
 
+/// Clamp a value to the inclusive range [0, 1].
 #[cube]
 pub(super) fn clamp01(v: f32) -> f32 {
     let zero = f32::new(0.0);
@@ -19,22 +23,26 @@ pub(super) fn clamp01(v: f32) -> f32 {
     }
 }
 
+/// Return the smaller of two f32 values.
 #[cube]
 pub(super) fn min_f32(a: f32, b: f32) -> f32 {
     if a < b { a } else { b }
 }
 
+/// Return the larger of two f32 values.
 #[cube]
 pub(super) fn max_f32(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
+/// Absolute value for f32 without relying on std.
 #[cube]
 pub(super) fn abs_f32(a: f32) -> f32 {
     let zero = f32::new(0.0);
     if a < zero { -a } else { a }
 }
 
+/// Clamp a value to the inclusive range [min_v, max_v].
 #[cube]
 pub(super) fn clamp_f32(v: f32, min_v: f32, max_v: f32) -> f32 {
     if v < min_v {
@@ -46,17 +54,20 @@ pub(super) fn clamp_f32(v: f32, min_v: f32, max_v: f32) -> f32 {
     }
 }
 
+/// Dot product of two 2D vectors.
 #[cube]
 pub(super) fn vec2_dot(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ax * bx + ay * by
 }
 
+/// Length of a 2D vector.
 #[cube]
 pub(super) fn vec2_length(ax: f32, ay: f32) -> f32 {
     let l_sq = vec2_dot(ax, ay, ax, ay);
     l_sq.sqrt()
 }
 
+/// Normalize a 2D vector, returning [x, y] or zeros if length is 0.
 #[cube]
 pub(super) fn vec2_normalize(ax: f32, ay: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -71,6 +82,7 @@ pub(super) fn vec2_normalize(ax: f32, ay: f32) -> Line<f32> {
     out
 }
 
+/// Apply a 2x3 affine transform to a point, returning [x, y].
 #[cube]
 pub(super) fn xform_pt_affine(m00: f32, m01: f32, m02: f32, m10: f32, m11: f32, m12: f32, px: f32, py: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -79,6 +91,7 @@ pub(super) fn xform_pt_affine(m00: f32, m01: f32, m02: f32, m10: f32, m11: f32, 
     out
 }
 
+/// Backprop for vec2 length; returns [d_ax, d_ay] given upstream d_l.
 #[cube]
 pub(super) fn d_length_vec2(ax: f32, ay: f32, d_l: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -95,6 +108,7 @@ pub(super) fn d_length_vec2(ax: f32, ay: f32, d_l: f32) -> Line<f32> {
     out
 }
 
+/// Backprop for distance between two points; accumulates into d_a and d_b.
 #[cube]
 pub(super) fn d_distance(ax: f32, ay: f32, bx: f32, by: f32, d_out: f32, d_a: &mut Line<f32>, d_b: &mut Line<f32>) {
     let dx = bx - ax;
@@ -106,6 +120,7 @@ pub(super) fn d_distance(ax: f32, ay: f32, bx: f32, by: f32, d_out: f32, d_a: &m
     d_b[1] += d_len[1];
 }
 
+/// Backprop for vec2 normalization, returning [d_ax, d_ay].
 #[cube]
 pub(super) fn d_normalize_vec2(ax: f32, ay: f32, d_nx: f32, d_ny: f32) -> Line<f32> {
     let mut out = Line::empty(2usize);
@@ -126,6 +141,7 @@ pub(super) fn d_normalize_vec2(ax: f32, ay: f32, d_nx: f32, d_ny: f32) -> Line<f
     out
 }
 
+/// Backprop for smoothstep_unit with respect to input d.
 #[cube]
 pub(super) fn d_smoothstep_unit(d: f32, d_ret: f32) -> f32 {
     let mut out = f32::new(0.0);

@@ -1,7 +1,10 @@
+//! Shape SDF helpers for GPU coverage evaluation.
+
 use cubecl::prelude::*;
 use crate::gpu::constants::*;
 use super::{math::*, curves::*};
 
+/// Compute fill coverage for a shape at (px, py) using SDF and winding.
 #[cube]
 pub(super) fn shape_fill_coverage(
     shape_data: &Array<f32>,
@@ -188,6 +191,7 @@ pub(super) fn shape_fill_coverage(
     coverage
 }
 
+/// Compute stroke coverage for a shape at (px, py) using SDF.
 #[cube]
 pub(super) fn shape_stroke_coverage(
     shape_data: &Array<f32>,
@@ -331,6 +335,7 @@ pub(super) fn shape_stroke_coverage(
     coverage
 }
 
+/// Signed distance for a segment with caps and optional varying thickness.
 #[cube]
 pub(super) fn segment_sdf_with_caps(
     px: f32,
@@ -383,6 +388,7 @@ pub(super) fn segment_sdf_with_caps(
     sdf
 }
 
+/// Signed distance for the swept segment rectangle with cap extensions.
 #[cube]
 pub(super) fn segment_rect_sdf(
     px: f32,
@@ -443,6 +449,7 @@ pub(super) fn segment_rect_sdf(
     sdf
 }
 
+/// Signed distance for a miter join wedge; returns a large value if invalid.
 #[cube]
 pub(super) fn miter_join_sdf(
     px: f32,
@@ -492,6 +499,7 @@ pub(super) fn miter_join_sdf(
     out
 }
 
+/// Signed distance to a triangle; negative inside, positive outside.
 #[cube]
 pub(super) fn distance_to_triangle(
     px: f32,
@@ -522,6 +530,7 @@ pub(super) fn distance_to_triangle(
     }
 }
 
+/// Normalize a 2D vector, returning [x, y] or zeros if too small.
 #[cube]
 pub(super) fn normalize_vec(x: f32, y: f32) -> Line<f32> {
     let zero = f32::new(0.0);
@@ -537,11 +546,13 @@ pub(super) fn normalize_vec(x: f32, y: f32) -> Line<f32> {
     out
 }
 
+/// 2D cross product (determinant) of two vectors.
 #[cube]
 pub(super) fn cross2(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
     ax * by - ay * bx
 }
 
+/// Clamp a value to the inclusive range [min_v, max_v].
 #[cube]
 pub(super) fn clamp_range(v: f32, min_v: f32, max_v: f32) -> f32 {
     if v < min_v {
@@ -553,6 +564,7 @@ pub(super) fn clamp_range(v: f32, min_v: f32, max_v: f32) -> f32 {
     }
 }
 
+/// Convert signed distance to coverage with optional smoothstep AA.
 #[cube]
 pub(super) fn sdf_coverage(dist: f32, aa: f32) -> f32 {
     let zero = f32::new(0.0);

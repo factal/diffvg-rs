@@ -363,6 +363,8 @@ pub(crate) fn resolve_splat_f32(
     output[out + 3] = a;
 }
 
+/// Blend a group's stroke and fill into the premultiplied output color.
+/// Coverage is derived from distances and winding/crossings, honoring prefiltering.
 #[cube]
 pub(super) fn blend_group(
     out: &mut Line<f32>,
@@ -431,6 +433,8 @@ pub(super) fn blend_group(
     }
 }
 
+/// Accumulate fill distance and winding/crossings for a single shape at (px, py).
+/// Updates `min_dist` with the closest boundary distance per fill rule.
 #[cube]
 pub(super) fn accumulate_shape_fill(
     shape_data: &Array<f32>,
@@ -596,6 +600,8 @@ pub(super) fn accumulate_shape_fill(
     }
 }
 
+/// Accumulate stroke coverage for a single shape at (px, py).
+/// In prefiltered mode, updates `min_dist`/`min_radius`; otherwise sets `hit`.
 #[cube]
 pub(super) fn accumulate_shape_stroke(
     shape_data: &Array<f32>,
@@ -754,6 +760,7 @@ pub(super) fn accumulate_shape_stroke(
     }
 }
 
+/// Walk all path curves to update fill distance and winding/crossings (no BVH).
 #[cube]
 pub(super) fn accumulate_path_fill_full(
     curve_data: &Array<f32>,
@@ -838,6 +845,7 @@ pub(super) fn accumulate_path_fill_full(
     }
 }
 
+/// Walk all path curves to update stroke distance/radius or hit (no BVH).
 #[cube]
 pub(super) fn accumulate_path_stroke_full(
     curve_data: &Array<f32>,
@@ -911,6 +919,8 @@ pub(super) fn accumulate_path_stroke_full(
     }
 }
 
+/// Traverse the path BVH to update fill distance and winding/crossings.
+/// Uses a distance-pruned pass and a ray-intersection pass for winding.
 #[cube]
 pub(super) fn accumulate_path_fill_bvh(
     curve_data: &Array<f32>,
@@ -1057,6 +1067,8 @@ pub(super) fn accumulate_path_fill_bvh(
     }
 }
 
+/// Traverse the path BVH to update stroke distance/radius or hit.
+/// Bounds pruning and early exit are used for non-prefiltered mode.
 #[cube]
 pub(super) fn accumulate_path_stroke_bvh(
     curve_data: &Array<f32>,
@@ -1165,6 +1177,7 @@ pub(super) fn accumulate_path_stroke_bvh(
     }
 }
 
+/// Evaluate all groups in a tile at the sample point and return premultiplied RGBA.
 #[cube]
 pub(super) fn eval_scene_tiled(
     shape_data: &Array<f32>,
@@ -1325,6 +1338,8 @@ pub(super) fn eval_scene_tiled(
     out
 }
 
+/// Accumulate fill/stroke data for all shapes in a group at the local point.
+/// Uses the group BVH when available, otherwise iterates the shape list.
 #[cube]
 pub(super) fn accumulate_group_shapes(
     shape_data: &Array<f32>,
@@ -1449,6 +1464,7 @@ pub(super) fn accumulate_group_shapes(
     }
 }
 
+/// Accumulate fill/stroke data for a single shape after bounds and transforms.
 #[cube]
 pub(super) fn accumulate_shape_in_group(
     shape_data: &Array<f32>,

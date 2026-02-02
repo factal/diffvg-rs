@@ -1,7 +1,9 @@
+//! PCG32 random number helpers for CubeCL kernels.
+
 use cubecl::prelude::*;
 use crate::gpu::constants::*;
 
-// 64-bit integer helpers for PCG in the shader environment.
+/// Multiply two u32 values and return the full 64-bit product as [lo, hi].
 #[cube]
 pub(super) fn mul32_full(a: u32, b: u32) -> Line<u32> {
     let mask = u32::new(0xffff);
@@ -33,6 +35,7 @@ pub(super) fn mul32_full(a: u32, b: u32) -> Line<u32> {
     out
 }
 
+/// Multiply two 64-bit values (lo, hi) and return the low 64 bits as [lo, hi].
 #[cube]
 pub(super) fn mul64_low(a_lo: u32, a_hi: u32, b_lo: u32, b_hi: u32) -> Line<u32> {
     let prod0 = mul32_full(a_lo, b_lo);
@@ -44,6 +47,7 @@ pub(super) fn mul64_low(a_lo: u32, a_hi: u32, b_lo: u32, b_hi: u32) -> Line<u32>
     out
 }
 
+/// Add two 64-bit values (lo, hi) and return the sum as [lo, hi].
 #[cube]
 pub(super) fn add64(a_lo: u32, a_hi: u32, b_lo: u32, b_hi: u32) -> Line<u32> {
     let mask = u32::new(0xffff);
@@ -63,6 +67,7 @@ pub(super) fn add64(a_lo: u32, a_hi: u32, b_lo: u32, b_hi: u32) -> Line<u32> {
     out
 }
 
+/// Logical right shift of a 64-bit value (lo, hi) by shift bits.
 #[cube]
 pub(super) fn shr64(lo: u32, hi: u32, shift: u32) -> Line<u32> {
     let mut out = Line::empty(2usize);
@@ -87,12 +92,14 @@ pub(super) fn shr64(lo: u32, hi: u32, shift: u32) -> Line<u32> {
     out
 }
 
+/// Return the low 32 bits of a shifted 64-bit value.
 #[cube]
 pub(super) fn shr64_to_u32(lo: u32, hi: u32, shift: u32) -> u32 {
     let shifted = shr64(lo, hi, shift);
     shifted[0]
 }
 
+/// Advance PCG32 state and return [rand_u32, state_lo, state_hi, 0].
 #[cube]
 pub(super) fn pcg32_next(state_lo: u32, state_hi: u32, inc_lo: u32, inc_hi: u32) -> Line<u32> {
     let old_lo = state_lo;
@@ -118,6 +125,7 @@ pub(super) fn pcg32_next(state_lo: u32, state_hi: u32, inc_lo: u32, inc_hi: u32)
     out
 }
 
+/// Initialize PCG32 from an index and seed, returning [state_lo, state_hi, inc_lo, inc_hi].
 #[cube]
 pub(super) fn pcg32_init(idx: u32, seed: u32) -> Line<u32> {
     let base = idx + u32::new(1);
@@ -147,6 +155,7 @@ pub(super) fn pcg32_init(idx: u32, seed: u32) -> Line<u32> {
     out
 }
 
+/// Convert a u32 to a float in [0, 1) using a 23-bit mantissa.
 #[cube]
 pub(super) fn pcg32_f32(x: u32) -> f32 {
     let mantissa = x >> 9;
