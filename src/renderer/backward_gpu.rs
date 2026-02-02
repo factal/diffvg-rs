@@ -1,7 +1,7 @@
 //! GPU-backed backward pass for differentiable rendering.
 
 use crate::backward::background::finalize_background_gradients;
-use crate::backward::boundary::boundary_sampling;
+use crate::backward::boundary::build_boundary_sampling_data;
 use crate::backward::BackwardOptions;
 use crate::grad::{DGradientStop, DLinearGradient, DPaint, DRadialGradient, SceneGrad};
 use crate::math::{Mat3, Vec2};
@@ -127,9 +127,9 @@ pub(crate) fn render_backward_gpu(
         shape_path_offsets,
         shape_path_point_counts,
         shape_path_ctrl_offsets,
-        shape_path_ctrl_counts: _shape_path_ctrl_counts,
-        shape_path_thickness_offsets: _shape_path_thickness_offsets,
-        shape_path_thickness_counts: _shape_path_thickness_counts,
+        shape_path_ctrl_counts,
+        shape_path_thickness_offsets,
+        shape_path_thickness_counts,
         shape_path_is_closed,
     } = PreparedSceneBuffers::from_prepared(&prepared);
 
@@ -167,9 +167,13 @@ pub(crate) fn render_backward_gpu(
     let shape_transform_handle = client.create_from_slice(f32::as_bytes(&shape_transform));
     let path_points_handle = client.create_from_slice(f32::as_bytes(&path_points));
     let path_controls_handle = client.create_from_slice(u32::as_bytes(&path_num_control_points));
+    let path_thickness_handle = client.create_from_slice(f32::as_bytes(&path_thickness));
     let shape_path_offsets_handle = client.create_from_slice(u32::as_bytes(&shape_path_offsets));
     let shape_path_point_counts_handle = client.create_from_slice(u32::as_bytes(&shape_path_point_counts));
     let shape_path_ctrl_offsets_handle = client.create_from_slice(u32::as_bytes(&shape_path_ctrl_offsets));
+    let shape_path_ctrl_counts_handle = client.create_from_slice(u32::as_bytes(&shape_path_ctrl_counts));
+    let shape_path_thickness_offsets_handle = client.create_from_slice(u32::as_bytes(&shape_path_thickness_offsets));
+    let shape_path_thickness_counts_handle = client.create_from_slice(u32::as_bytes(&shape_path_thickness_counts));
     let shape_path_is_closed_handle = client.create_from_slice(u32::as_bytes(&shape_path_is_closed));
 
     let background_handle = client.create_from_slice(f32::as_bytes(&background_image));
@@ -216,6 +220,12 @@ pub(crate) fn render_backward_gpu(
     let d_background_handle = client.create_from_slice(f32::as_bytes(&d_background));
     let d_background_image_handle = client.create_from_slice(f32::as_bytes(&d_background_image));
     let d_translation_handle = client.create_from_slice(f32::as_bytes(&d_translation));
+
+    let boundary_sampling_data = if !use_prefiltering && d_render_image.is_some() {
+        build_boundary_sampling_data(scene)
+    } else {
+        None
+    };
 
     unsafe {
         if render_grad_flag != 0 {
@@ -362,6 +372,110 @@ pub(crate) fn render_backward_gpu(
             }
         }
 
+        if let Some(boundary_data) = boundary_sampling_data {
+            let shape_sample_count = boundary_data.shape_cdf.len();
+            if shape_sample_count > 0 && shape_sample_count <= u32::MAX as usize {
+                let shape_sample_count = shape_sample_count as u32;
+                let shape_lengths = ensure_nonempty(boundary_data.shape_lengths, 0.0);
+                let shape_cdf = ensure_nonempty(boundary_data.shape_cdf, 0.0);
+                let shape_pmf = ensure_nonempty(boundary_data.shape_pmf, 0.0);
+                let shape_ids = ensure_nonempty_u32(boundary_data.shape_ids, 0);
+                let group_ids = ensure_nonempty_u32(boundary_data.group_ids, 0);
+                let path_cdf = ensure_nonempty(boundary_data.path_cdf, 0.0);
+                let path_pmf = ensure_nonempty(boundary_data.path_pmf, 0.0);
+                let path_point_ids = ensure_nonempty_u32(boundary_data.path_point_ids, 0);
+                let path_cdf_offsets = ensure_nonempty_u32(boundary_data.path_cdf_offsets, 0);
+                let path_cdf_counts = ensure_nonempty_u32(boundary_data.path_cdf_counts, 0);
+                let path_point_offsets = ensure_nonempty_u32(boundary_data.path_point_offsets, 0);
+
+                let shape_lengths_handle = client.create_from_slice(f32::as_bytes(&shape_lengths));
+                let shape_cdf_handle = client.create_from_slice(f32::as_bytes(&shape_cdf));
+                let shape_pmf_handle = client.create_from_slice(f32::as_bytes(&shape_pmf));
+                let shape_ids_handle = client.create_from_slice(u32::as_bytes(&shape_ids));
+                let group_ids_handle = client.create_from_slice(u32::as_bytes(&group_ids));
+                let path_cdf_handle = client.create_from_slice(f32::as_bytes(&path_cdf));
+                let path_pmf_handle = client.create_from_slice(f32::as_bytes(&path_pmf));
+                let path_point_ids_handle = client.create_from_slice(u32::as_bytes(&path_point_ids));
+                let path_cdf_offsets_handle = client.create_from_slice(u32::as_bytes(&path_cdf_offsets));
+                let path_cdf_counts_handle = client.create_from_slice(u32::as_bytes(&path_cdf_counts));
+                let path_point_offsets_handle = client.create_from_slice(u32::as_bytes(&path_point_offsets));
+
+                gpu::boundary_sampling_kernel::launch_unchecked::<WgpuRuntime>(
+                    &client,
+                    sample_count.clone(),
+                    sample_dim,
+                    ArrayArg::from_raw_parts::<f32>(&shape_handle, shape_data.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&segment_handle, segment_data.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_bounds_handle, shape_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_handle, group_data.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_xform_handle, group_xform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_shape_xform_handle, group_shape_xform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_shapes_handle, group_shapes.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_xform_handle, shape_xform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_transform_handle, shape_transform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&curve_handle, curve_data.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&gradient_handle, gradient_data.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&stop_offsets_handle, stop_offsets.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&stop_colors_handle, stop_colors.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&group_bvh_bounds_handle, group_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_nodes_handle, group_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_indices_handle, group_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_bvh_meta_handle, group_bvh_meta.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_bvh_bounds_handle, path_bvh_bounds.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_nodes_handle, path_bvh_nodes.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_indices_handle, path_bvh_indices.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_bvh_meta_handle, path_bvh_meta.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_points_handle, path_points.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_controls_handle, path_num_control_points.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_thickness_handle, path_thickness.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_offsets_handle, shape_path_offsets.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_point_counts_handle, shape_path_point_counts.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_ctrl_offsets_handle, shape_path_ctrl_offsets.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_ctrl_counts_handle, shape_path_ctrl_counts.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_thickness_offsets_handle, shape_path_thickness_offsets.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_thickness_counts_handle, shape_path_thickness_counts.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_path_is_closed_handle, shape_path_is_closed.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_lengths_handle, shape_lengths.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_cdf_handle, shape_cdf.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&shape_pmf_handle, shape_pmf.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&shape_ids_handle, shape_ids.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&group_ids_handle, group_ids.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_cdf_handle, path_cdf.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&path_pmf_handle, path_pmf.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_point_ids_handle, path_point_ids.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_cdf_offsets_handle, path_cdf_offsets.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_cdf_counts_handle, path_cdf_counts.len(), 1),
+                    ArrayArg::from_raw_parts::<u32>(&path_point_offsets_handle, path_point_offsets.len(), 1),
+                    ScalarArg::new(shape_sample_count),
+                    ScalarArg::new(scene.width),
+                    ScalarArg::new(scene.height),
+                    ScalarArg::new(prepared.prepared.num_groups),
+                    ScalarArg::new(samples_x),
+                    ScalarArg::new(samples_y),
+                    ScalarArg::new(options.seed),
+                    ScalarArg::new(scene.filter.filter_type.as_u32()),
+                    ScalarArg::new(scene.filter.radius),
+                    ArrayArg::from_raw_parts::<f32>(&background_handle, background_image.len(), 1),
+                    ScalarArg::new(has_background_image),
+                    ScalarArg::new(scene.background.r),
+                    ScalarArg::new(scene.background.g),
+                    ScalarArg::new(scene.background.b),
+                    ScalarArg::new(scene.background.a),
+                    ArrayArg::from_raw_parts::<f32>(&weight_handle, weight_len, 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_render_image_handle, d_render_len, 1),
+                    ScalarArg::new(translation_flag),
+                    ArrayArg::from_raw_parts::<f32>(&d_shape_params_handle, d_shape_params.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_shape_points_handle, d_shape_points.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_shape_thickness_handle, d_shape_thickness.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_shape_stroke_width_handle, d_shape_stroke_width.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_shape_transform_handle, d_shape_transform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_group_transform_handle, d_group_transform.len(), 1),
+                    ArrayArg::from_raw_parts::<f32>(&d_translation_handle, d_translation.len(), 1),
+                )
+                .map_err(RenderError::Launch)?;
+            }
+        }
+
     }
 
     let d_shape_params = f32::from_bytes(&client.read_one(d_shape_params_handle)).to_vec();
@@ -399,23 +513,6 @@ pub(crate) fn render_backward_gpu(
         &d_translation,
         &mut grads,
     );
-
-    if !use_prefiltering && d_render_image.is_some() {
-        let weight_bytes = client.read_one(weight_handle);
-        let weight_image = f32::from_bytes(&weight_bytes).to_vec();
-        let bvh = crate::distance::SceneBvh::new(scene);
-        boundary_sampling(
-            scene,
-            &bvh,
-            samples_x,
-            samples_y,
-            options.seed,
-            d_render_image.unwrap(),
-            &weight_image,
-            &mut grads,
-            backward_options.compute_translation,
-        );
-    }
 
     finalize_background_gradients(scene, &mut grads);
 

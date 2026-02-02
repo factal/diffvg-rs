@@ -16,6 +16,86 @@ use super::types::{
     BoundaryData, BoundarySample, EdgeQuery, PathBoundaryData, PathCdf, ShapeCdf,
 };
 
+pub(crate) struct BoundarySamplingData {
+    pub(crate) shape_lengths: Vec<f32>,
+    pub(crate) shape_cdf: Vec<f32>,
+    pub(crate) shape_pmf: Vec<f32>,
+    pub(crate) shape_ids: Vec<u32>,
+    pub(crate) group_ids: Vec<u32>,
+    pub(crate) path_cdf: Vec<f32>,
+    pub(crate) path_pmf: Vec<f32>,
+    pub(crate) path_point_ids: Vec<u32>,
+    pub(crate) path_cdf_offsets: Vec<u32>,
+    pub(crate) path_cdf_counts: Vec<u32>,
+    pub(crate) path_point_offsets: Vec<u32>,
+}
+
+pub(crate) fn build_boundary_sampling_data(scene: &Scene) -> Option<BoundarySamplingData> {
+    if scene.groups.is_empty() {
+        return None;
+    }
+
+    let shape_lengths = compute_shape_lengths(scene);
+    let shape_cdf = build_shape_cdf(scene, &shape_lengths)?;
+    let path_cdfs = build_path_cdfs(scene, &shape_lengths);
+
+    if shape_cdf.cdf.len() > u32::MAX as usize {
+        return None;
+    }
+
+    let mut shape_ids = Vec::with_capacity(shape_cdf.shape_ids.len());
+    for &id in &shape_cdf.shape_ids {
+        shape_ids.push(u32::try_from(id).ok()?);
+    }
+    let mut group_ids = Vec::with_capacity(shape_cdf.group_ids.len());
+    for &id in &shape_cdf.group_ids {
+        group_ids.push(u32::try_from(id).ok()?);
+    }
+
+    let mut path_cdf = Vec::new();
+    let mut path_pmf = Vec::new();
+    let mut path_point_ids = Vec::new();
+    let mut path_cdf_offsets = vec![0u32; scene.shapes.len()];
+    let mut path_cdf_counts = vec![0u32; scene.shapes.len()];
+    let mut path_point_offsets = vec![0u32; scene.shapes.len()];
+
+    for (shape_id, cdf) in path_cdfs.iter().enumerate() {
+        let Some(path_cdf_data) = cdf.as_ref() else {
+            continue;
+        };
+
+        let cdf_offset = path_cdf.len();
+        let point_offset = path_point_ids.len();
+        if cdf_offset > u32::MAX as usize || point_offset > u32::MAX as usize {
+            return None;
+        }
+
+        path_cdf_offsets[shape_id] = cdf_offset as u32;
+        path_cdf_counts[shape_id] = u32::try_from(path_cdf_data.cdf.len()).ok()?;
+        path_point_offsets[shape_id] = point_offset as u32;
+
+        path_cdf.extend_from_slice(&path_cdf_data.cdf);
+        path_pmf.extend_from_slice(&path_cdf_data.pmf);
+        for &pid in &path_cdf_data.point_id_map {
+            path_point_ids.push(u32::try_from(pid).ok()?);
+        }
+    }
+
+    Some(BoundarySamplingData {
+        shape_lengths,
+        shape_cdf: shape_cdf.cdf,
+        shape_pmf: shape_cdf.pmf,
+        shape_ids,
+        group_ids,
+        path_cdf,
+        path_pmf,
+        path_point_ids,
+        path_cdf_offsets,
+        path_cdf_counts,
+        path_point_offsets,
+    })
+}
+
 /// Performs stochastic boundary sampling and accumulates edge gradients.
 pub(crate) fn boundary_sampling(
     scene: &Scene,

@@ -1,7 +1,6 @@
-//! GPU renderer implementation and CPU-side SDF helpers.
+//! GPU renderer implementation and SDF helpers.
 
 use crate::backward::BackwardOptions;
-use crate::distance::{DistanceOptions, SceneBvh};
 use crate::grad::SceneGrad;
 use crate::math::Vec2;
 use crate::scene::Scene;
@@ -14,10 +13,9 @@ use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 use super::constants::TILE_SIZE;
 use super::backward_gpu::render_backward_gpu;
 use super::prepare::prepare_scene;
-use super::rng::Pcg32;
 use super::tiles::{build_tile_order, div_ceil, sort_tile_entries};
 use super::types::{Image, RenderError, RenderOptions, SdfImage};
-use super::utils::{ensure_nonempty, ensure_nonempty_u32, sample_distance};
+use super::utils::{ensure_nonempty, ensure_nonempty_u32};
 
 /// GPU-backed renderer targeting WGPU via CubeCL.
 pub struct Renderer {
@@ -587,7 +585,7 @@ impl Renderer {
         let pixel_count = (scene.width as usize)
             .checked_mul(scene.height as usize)
             .ok_or(RenderError::InvalidScene("image size overflow"))?;
-        let mut values = vec![0.0f32; pixel_count];
+        let values = vec![0.0f32; pixel_count];
         if scene.groups.is_empty() {
             return Ok(SdfImage {
                 width: scene.width,
@@ -595,47 +593,121 @@ impl Renderer {
                 values,
             });
         }
+        let prepared = prepare_scene(scene, &options)?;
+        if prepared.num_groups == 0 {
+            return Ok(SdfImage {
+                width: scene.width,
+                height: scene.height,
+                values,
+            });
+        }
+
+        let mut shape_transform = Vec::with_capacity(scene.shapes.len() * 6);
+        for shape in &scene.shapes {
+            let t = shape.transform;
+            shape_transform.extend_from_slice(&[
+                t.m[0][0],
+                t.m[0][1],
+                t.m[0][2],
+                t.m[1][0],
+                t.m[1][1],
+                t.m[1][2],
+            ]);
+        }
+
+        let client = WgpuRuntime::client(&self.device);
+
+        let shape_data = ensure_nonempty(prepared.shape_data, 0.0);
+        let segment_data = ensure_nonempty(prepared.segment_data, 0.0);
+        let shape_bounds = ensure_nonempty(prepared.shape_bounds, 0.0);
+        let group_data = ensure_nonempty(prepared.group_data, 0.0);
+        let group_xform = ensure_nonempty(prepared.group_xform, 0.0);
+        let group_shape_xform = ensure_nonempty(prepared.group_shape_xform, 0.0);
+        let group_shapes = ensure_nonempty(prepared.group_shapes, 0.0);
+        let shape_xform = ensure_nonempty(prepared.shape_xform, 0.0);
+        let shape_transform = ensure_nonempty(shape_transform, 0.0);
+        let curve_data = ensure_nonempty(prepared.curve_data, 0.0);
+        let group_bvh_bounds = ensure_nonempty(prepared.group_bvh_bounds, 0.0);
+        let group_bvh_nodes = ensure_nonempty_u32(prepared.group_bvh_nodes, 0);
+        let group_bvh_indices = ensure_nonempty_u32(prepared.group_bvh_indices, 0);
+        let group_bvh_meta = ensure_nonempty_u32(prepared.group_bvh_meta, 0);
+        let path_bvh_bounds = ensure_nonempty(prepared.path_bvh_bounds, 0.0);
+        let path_bvh_nodes = ensure_nonempty_u32(prepared.path_bvh_nodes, 0);
+        let path_bvh_indices = ensure_nonempty_u32(prepared.path_bvh_indices, 0);
+        let path_bvh_meta = ensure_nonempty_u32(prepared.path_bvh_meta, 0);
+
+        let shape_handle = client.create_from_slice(f32::as_bytes(&shape_data));
+        let segment_handle = client.create_from_slice(f32::as_bytes(&segment_data));
+        let shape_bounds_handle = client.create_from_slice(f32::as_bytes(&shape_bounds));
+        let group_handle = client.create_from_slice(f32::as_bytes(&group_data));
+        let group_xform_handle = client.create_from_slice(f32::as_bytes(&group_xform));
+        let group_shape_xform_handle = client.create_from_slice(f32::as_bytes(&group_shape_xform));
+        let group_shapes_handle = client.create_from_slice(f32::as_bytes(&group_shapes));
+        let shape_xform_handle = client.create_from_slice(f32::as_bytes(&shape_xform));
+        let shape_transform_handle = client.create_from_slice(f32::as_bytes(&shape_transform));
+        let curve_handle = client.create_from_slice(f32::as_bytes(&curve_data));
+        let group_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&group_bvh_bounds));
+        let group_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&group_bvh_nodes));
+        let group_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&group_bvh_indices));
+        let group_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&group_bvh_meta));
+        let path_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&path_bvh_bounds));
+        let path_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&path_bvh_nodes));
+        let path_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&path_bvh_indices));
+        let path_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&path_bvh_meta));
+
+        let output_handle = client.empty(pixel_count * core::mem::size_of::<f32>());
 
         let samples_x = options.samples_x.max(1);
         let samples_y = options.samples_y.max(1);
-        let total_samples = (samples_x as f32) * (samples_y as f32);
-        let weight = if total_samples > 0.0 {
-            1.0 / total_samples
+        let jitter = if options.use_prefiltering {
+            0u32
+        } else if options.jitter {
+            1u32
         } else {
-            1.0
-        };
-        let use_jitter = options.jitter && !options.use_prefiltering;
-        let bvh = SceneBvh::new(scene);
-        let dist_options = DistanceOptions {
-            path_tolerance: options.path_tolerance,
+            0u32
         };
 
-        for y in 0..scene.height {
-            for x in 0..scene.width {
-                let mut accum = 0.0f32;
-                for sy in 0..samples_y {
-                    for sx in 0..samples_x {
-                        let mut rx = 0.5f32;
-                        let mut ry = 0.5f32;
-                        if use_jitter {
-                            let canonical = (((y as u64 * scene.width as u64) + x as u64)
-                                * samples_y as u64
-                                + sy as u64)
-                                * samples_x as u64
-                                + sx as u64;
-                            let mut rng = Pcg32::new(canonical, options.seed as u64);
-                            rx = rng.next_f32();
-                            ry = rng.next_f32();
-                        }
-                        let px = x as f32 + (sx as f32 + rx) / samples_x as f32;
-                        let py = y as f32 + (sy as f32 + ry) / samples_y as f32;
-                        let dist = sample_distance(scene, &bvh, Vec2::new(px, py), dist_options);
-                        accum += dist;
-                    }
-                }
-                values[(y * scene.width + x) as usize] = accum * weight;
-            }
+        unsafe {
+            let cube_dim = CubeDim::new_2d(8, 8);
+            let cubes_x = div_ceil(scene.width, cube_dim.x);
+            let cubes_y = div_ceil(scene.height, cube_dim.y);
+            let cube_count = CubeCount::new_2d(cubes_x, cubes_y);
+            gpu::render_sdf_kernel::launch_unchecked::<WgpuRuntime>(
+                &client,
+                cube_count,
+                cube_dim,
+                ArrayArg::from_raw_parts::<f32>(&shape_handle, shape_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&segment_handle, segment_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_bounds_handle, shape_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_handle, group_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_xform_handle, group_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_shape_xform_handle, group_shape_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_shapes_handle, group_shapes.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_xform_handle, shape_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_transform_handle, shape_transform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&curve_handle, curve_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_bvh_bounds_handle, group_bvh_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_nodes_handle, group_bvh_nodes.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_indices_handle, group_bvh_indices.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_meta_handle, group_bvh_meta.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&path_bvh_bounds_handle, path_bvh_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_nodes_handle, path_bvh_nodes.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_indices_handle, path_bvh_indices.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_meta_handle, path_bvh_meta.len(), 1),
+                ScalarArg::new(scene.width),
+                ScalarArg::new(scene.height),
+                ScalarArg::new(prepared.num_groups),
+                ScalarArg::new(samples_x),
+                ScalarArg::new(samples_y),
+                ScalarArg::new(options.seed),
+                ScalarArg::new(jitter),
+                ArrayArg::from_raw_parts::<f32>(&output_handle, pixel_count, 1),
+            )
+            .map_err(RenderError::Launch)?;
         }
+
+        let bytes = client.read_one(output_handle);
+        let values = f32::from_bytes(&bytes).to_vec();
 
         Ok(SdfImage {
             width: scene.width,
@@ -654,14 +726,115 @@ impl Renderer {
         if positions.is_empty() {
             return Ok(Vec::new());
         }
-        let bvh = SceneBvh::new(scene);
-        let dist_options = DistanceOptions {
-            path_tolerance: options.path_tolerance,
-        };
-        let mut values = Vec::with_capacity(positions.len());
-        for &pt in positions {
-            values.push(sample_distance(scene, &bvh, pt, dist_options));
+        if scene.groups.is_empty() {
+            return Ok(vec![0.0f32; positions.len()]);
         }
-        Ok(values)
+
+        let prepared = prepare_scene(scene, &options)?;
+        if prepared.num_groups == 0 {
+            return Ok(vec![0.0f32; positions.len()]);
+        }
+
+        let mut shape_transform = Vec::with_capacity(scene.shapes.len() * 6);
+        for shape in &scene.shapes {
+            let t = shape.transform;
+            shape_transform.extend_from_slice(&[
+                t.m[0][0],
+                t.m[0][1],
+                t.m[0][2],
+                t.m[1][0],
+                t.m[1][1],
+                t.m[1][2],
+            ]);
+        }
+
+        let mut positions_flat = Vec::with_capacity(positions.len() * 2);
+        for pt in positions {
+            positions_flat.push(pt.x);
+            positions_flat.push(pt.y);
+        }
+        if positions.len() > (u32::MAX as usize) {
+            return Err(RenderError::InvalidScene("too many eval positions for 1d launch"));
+        }
+        let position_count = positions.len() as u32;
+
+        let client = WgpuRuntime::client(&self.device);
+
+        let shape_data = ensure_nonempty(prepared.shape_data, 0.0);
+        let segment_data = ensure_nonempty(prepared.segment_data, 0.0);
+        let shape_bounds = ensure_nonempty(prepared.shape_bounds, 0.0);
+        let group_data = ensure_nonempty(prepared.group_data, 0.0);
+        let group_xform = ensure_nonempty(prepared.group_xform, 0.0);
+        let group_shape_xform = ensure_nonempty(prepared.group_shape_xform, 0.0);
+        let group_shapes = ensure_nonempty(prepared.group_shapes, 0.0);
+        let shape_xform = ensure_nonempty(prepared.shape_xform, 0.0);
+        let shape_transform = ensure_nonempty(shape_transform, 0.0);
+        let curve_data = ensure_nonempty(prepared.curve_data, 0.0);
+        let group_bvh_bounds = ensure_nonempty(prepared.group_bvh_bounds, 0.0);
+        let group_bvh_nodes = ensure_nonempty_u32(prepared.group_bvh_nodes, 0);
+        let group_bvh_indices = ensure_nonempty_u32(prepared.group_bvh_indices, 0);
+        let group_bvh_meta = ensure_nonempty_u32(prepared.group_bvh_meta, 0);
+        let path_bvh_bounds = ensure_nonempty(prepared.path_bvh_bounds, 0.0);
+        let path_bvh_nodes = ensure_nonempty_u32(prepared.path_bvh_nodes, 0);
+        let path_bvh_indices = ensure_nonempty_u32(prepared.path_bvh_indices, 0);
+        let path_bvh_meta = ensure_nonempty_u32(prepared.path_bvh_meta, 0);
+
+        let shape_handle = client.create_from_slice(f32::as_bytes(&shape_data));
+        let segment_handle = client.create_from_slice(f32::as_bytes(&segment_data));
+        let shape_bounds_handle = client.create_from_slice(f32::as_bytes(&shape_bounds));
+        let group_handle = client.create_from_slice(f32::as_bytes(&group_data));
+        let group_xform_handle = client.create_from_slice(f32::as_bytes(&group_xform));
+        let group_shape_xform_handle = client.create_from_slice(f32::as_bytes(&group_shape_xform));
+        let group_shapes_handle = client.create_from_slice(f32::as_bytes(&group_shapes));
+        let shape_xform_handle = client.create_from_slice(f32::as_bytes(&shape_xform));
+        let shape_transform_handle = client.create_from_slice(f32::as_bytes(&shape_transform));
+        let curve_handle = client.create_from_slice(f32::as_bytes(&curve_data));
+        let group_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&group_bvh_bounds));
+        let group_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&group_bvh_nodes));
+        let group_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&group_bvh_indices));
+        let group_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&group_bvh_meta));
+        let path_bvh_bounds_handle = client.create_from_slice(f32::as_bytes(&path_bvh_bounds));
+        let path_bvh_nodes_handle = client.create_from_slice(u32::as_bytes(&path_bvh_nodes));
+        let path_bvh_indices_handle = client.create_from_slice(u32::as_bytes(&path_bvh_indices));
+        let path_bvh_meta_handle = client.create_from_slice(u32::as_bytes(&path_bvh_meta));
+
+        let positions_handle = client.create_from_slice(f32::as_bytes(&positions_flat));
+        let output_handle = client.empty(positions.len() * core::mem::size_of::<f32>());
+
+        unsafe {
+            let sample_dim = CubeDim::new_1d(256);
+            let sample_count = CubeCount::new_1d(div_ceil(position_count, sample_dim.x));
+            gpu::eval_positions_kernel::launch_unchecked::<WgpuRuntime>(
+                &client,
+                sample_count,
+                sample_dim,
+                ArrayArg::from_raw_parts::<f32>(&shape_handle, shape_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&segment_handle, segment_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_bounds_handle, shape_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_handle, group_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_xform_handle, group_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_shape_xform_handle, group_shape_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_shapes_handle, group_shapes.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_xform_handle, shape_xform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&shape_transform_handle, shape_transform.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&curve_handle, curve_data.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&group_bvh_bounds_handle, group_bvh_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_nodes_handle, group_bvh_nodes.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_indices_handle, group_bvh_indices.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&group_bvh_meta_handle, group_bvh_meta.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&path_bvh_bounds_handle, path_bvh_bounds.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_nodes_handle, path_bvh_nodes.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_indices_handle, path_bvh_indices.len(), 1),
+                ArrayArg::from_raw_parts::<u32>(&path_bvh_meta_handle, path_bvh_meta.len(), 1),
+                ArrayArg::from_raw_parts::<f32>(&positions_handle, positions_flat.len(), 1),
+                ScalarArg::new(position_count),
+                ScalarArg::new(prepared.num_groups),
+                ArrayArg::from_raw_parts::<f32>(&output_handle, positions.len(), 1),
+            )
+            .map_err(RenderError::Launch)?;
+        }
+
+        let bytes = client.read_one(output_handle);
+        Ok(f32::from_bytes(&bytes).to_vec())
     }
 }
