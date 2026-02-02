@@ -4,6 +4,7 @@ use crate::scene::Paint;
 
 use super::math::{d_length, dot4};
 
+/// Evaluate a paint at `pt`, returning an RGBA color.
 pub(super) fn paint_color(paint: &Paint, pt: Vec2) -> Vec4 {
     match paint {
         Paint::Solid(color) => Vec4::new(color.r, color.g, color.b, color.a),
@@ -72,6 +73,7 @@ pub(super) fn paint_color(paint: &Paint, pt: Vec2) -> Vec4 {
     }
 }
 
+/// Backpropagate a paint sample, accumulating gradients into `d_paint` and `d_translation`.
 pub(super) fn d_sample_paint(
     paint: &Paint,
     d_paint: &mut DPaint,

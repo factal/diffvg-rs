@@ -3,6 +3,7 @@ use crate::grad::SceneGrad;
 use crate::math::Vec4;
 use crate::scene::Scene;
 
+/// Sample the background color at a pixel, returning premultiplied RGBA.
 pub(super) fn sample_background(scene: &Scene, pixel_index: usize) -> Vec4 {
     if let Some(background_image) = scene.background_image.as_ref() {
         let base = pixel_index * 4;
@@ -21,6 +22,7 @@ pub(super) fn sample_background(scene: &Scene, pixel_index: usize) -> Vec4 {
     }
 }
 
+/// Convert accumulated background gradients to the original background parameters.
 pub(crate) fn finalize_background_gradients(scene: &Scene, grads: &mut SceneGrad) {
     if let Some(image) = scene.background_image.as_ref() {
         if let Some(d_bg) = grads.background_image.as_mut() {
@@ -55,6 +57,7 @@ pub(crate) fn finalize_background_gradients(scene: &Scene, grads: &mut SceneGrad
     }
 }
 
+/// Accumulate gradients for the background contribution of a pixel.
 pub(super) fn accumulate_background_grad(
     scene: &Scene,
     grads: &mut SceneGrad,
@@ -83,6 +86,7 @@ pub(super) fn accumulate_background_grad(
     grads.background = add_color(grads.background, d_bg);
 }
 
+/// Add two colors component-wise.
 fn add_color(a: Color, b: Color) -> Color {
     Color {
         r: a.r + b.r,

@@ -16,6 +16,7 @@ pub struct BackwardOptions {
 }
 
 impl Default for BackwardOptions {
+    /// Default backward options with translation gradients disabled.
     fn default() -> Self {
         Self {
             compute_translation: false,
@@ -23,6 +24,7 @@ impl Default for BackwardOptions {
     }
 }
 
+/// Run the backward pass for render and/or SDF targets, producing scene gradients.
 pub fn render_backward(
     scene: &Scene,
     options: RenderOptions,
@@ -255,6 +257,7 @@ pub fn render_backward_positions(
     Ok(grads)
 }
 
+/// Map a point to a pixel index for translation gradients if the point is in-bounds.
 fn translation_index_for_point(scene: &Scene, pt: Vec2) -> Option<usize> {
     let x = pt.x as i32;
     let y = pt.y as i32;

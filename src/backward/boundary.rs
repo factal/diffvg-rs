@@ -16,6 +16,7 @@ use super::types::{
     BoundaryData, BoundarySample, EdgeQuery, PathBoundaryData, PathCdf, ShapeCdf,
 };
 
+/// Performs stochastic boundary sampling and accumulates edge gradients.
 pub(crate) fn boundary_sampling(
     scene: &Scene,
     bvh: &SceneBvh,
@@ -102,6 +103,7 @@ pub(crate) fn boundary_sampling(
     }
 }
 
+/// Approximates per-shape boundary lengths for sampling.
 fn compute_shape_lengths(scene: &crate::scene::Scene) -> Vec<f32> {
     let mut lengths = vec![0.0f32; scene.shapes.len()];
     for (shape_id, shape) in scene.shapes.iter().enumerate() {
@@ -131,6 +133,7 @@ fn compute_shape_lengths(scene: &crate::scene::Scene) -> Vec<f32> {
     lengths
 }
 
+/// Estimates a path length by linearizing each segment.
 fn path_length(path: &Path) -> f32 {
     let total_points = path.points.len();
     if total_points == 0 {
@@ -212,6 +215,7 @@ fn path_length(path: &Path) -> f32 {
     length
 }
 
+/// Builds a CDF/PMF over shapes weighted by boundary length.
 fn build_shape_cdf(
     scene: &crate::scene::Scene,
     shape_lengths: &[f32],
@@ -248,6 +252,7 @@ fn build_shape_cdf(
     })
 }
 
+/// Builds per-path segment CDFs for boundary sampling.
 fn build_path_cdfs(
     scene: &crate::scene::Scene,
     shape_lengths: &[f32],
@@ -352,6 +357,7 @@ fn build_path_cdfs(
     out
 }
 
+/// Samples a piecewise-constant CDF and returns (index, local_t).
 fn sample_cdf(cdf: &[f32], u: f32) -> (usize, f32) {
     if cdf.is_empty() {
         return (0, 0.0);
@@ -369,6 +375,7 @@ fn sample_cdf(cdf: &[f32], u: f32) -> (usize, f32) {
     (idx, t)
 }
 
+/// Samples a boundary point on a shape and returns point, normal, pdf, and metadata.
 fn sample_boundary_point(
     scene: &crate::scene::Scene,
     shape_id: usize,
@@ -526,6 +533,7 @@ fn sample_boundary_point(
     Some((pt, normal, pdf, data))
 }
 
+/// Samples a boundary point along a path segment (including stroke caps).
 fn sample_boundary_path(
     path: &Path,
     path_cdf: &PathCdf,
@@ -740,6 +748,7 @@ fn sample_boundary_path(
     }
 }
 
+/// Renders a boundary sample and accumulates its gradient contribution.
 fn render_edge_sample(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -864,6 +873,7 @@ fn render_edge_sample(
     }
 }
 
+/// Accumulates shape and transform gradients for a boundary contribution.
 fn accumulate_boundary_gradient(
     shape: &Shape,
     contrib: f32,

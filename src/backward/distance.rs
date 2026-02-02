@@ -10,6 +10,7 @@ use super::math::{
 };
 use super::types::PathInfo;
 
+/// Convert a closest-path query result into `PathInfo` for gradient propagation.
 pub(super) fn path_info_from_closest(
     scene: &crate::scene::Scene,
     shape_index: usize,
@@ -30,6 +31,7 @@ pub(super) fn path_info_from_closest(
     })
 }
 
+/// Convert a segment base index into the corresponding point index in `path.points`.
 pub(super) fn path_point_id(path: &Path, base_point_id: usize) -> usize {
     let mut point_id = 0usize;
     let count = base_point_id.min(path.num_control_points.len());
@@ -44,6 +46,7 @@ pub(super) fn path_point_id(path: &Path, base_point_id: usize) -> usize {
     point_id
 }
 
+/// Backpropagate a distance query into shape/group transforms and geometry.
 pub(super) fn d_compute_distance(
     group: &ShapeGroup,
     shape: &Shape,
@@ -132,6 +135,7 @@ pub(super) fn d_compute_distance(
     d_pt
 }
 
+/// Backpropagate a closest-point query for a shape, updating `d_shape` and `d_pt`.
 fn d_closest_point(
     shape: &Shape,
     pt: Vec2,
@@ -182,6 +186,7 @@ fn d_closest_point(
     }
 }
 
+/// Backpropagate a closest-point query on a path segment.
 fn d_closest_point_path(
     path: &Path,
     pt: Vec2,
@@ -388,6 +393,7 @@ fn d_closest_point_path(
     }
 }
 
+/// Backpropagate the closest-point query for a rectangle.
 fn d_closest_point_rect(
     min: Vec2,
     max: Vec2,
@@ -469,6 +475,7 @@ fn d_closest_point_rect(
     *d_max += d_right_bottom;
 }
 
+/// Backpropagate the closest-point query for an ellipse.
 fn d_closest_point_ellipse(
     center: Vec2,
     radius: Vec2,

@@ -8,22 +8,27 @@ pub(super) struct Rgb {
 }
 
 impl Rgb {
+    /// Construct an RGB triple without alpha.
     pub(super) fn new(r: f32, g: f32, b: f32) -> Self {
         Self { r, g, b }
     }
 
+    /// Return the dot product between two RGB values.
     pub(super) fn dot(self, other: Self) -> f32 {
         self.r * other.r + self.g * other.g + self.b * other.b
     }
 
+    /// Scale each channel by a scalar.
     pub(super) fn scale(self, s: f32) -> Self {
         Self::new(self.r * s, self.g * s, self.b * s)
     }
 
+    /// Add two RGB values component-wise.
     pub(super) fn add(self, other: Self) -> Self {
         Self::new(self.r + other.r, self.g + other.g, self.b + other.b)
     }
 
+    /// Subtract two RGB values component-wise.
     pub(super) fn sub(self, other: Self) -> Self {
         Self::new(self.r - other.r, self.g - other.g, self.b - other.b)
     }

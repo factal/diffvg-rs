@@ -10,6 +10,7 @@ use super::math::{d_smoothstep, smoothstep, transform_point_inverse};
 use super::paint::{d_sample_paint, paint_color};
 use super::types::{EdgeQuery, Fragment, PathInfo, PrefilterFragment, Rgb};
 
+/// Accumulates distance-based gradients for a single SDF sample.
 pub(super) fn sample_distance(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -66,10 +67,12 @@ pub(super) fn sample_distance(
     accumulate_translation(grads, translation_index, d_pt * -1.0);
 }
 
+/// Wrapper for inside tests to keep module-local behavior consistent.
 fn is_inside_bvh(scene: &crate::scene::Scene, bvh: &SceneBvh, group_id: usize, pt: Vec2) -> bool {
     crate::distance::is_inside_bvh(scene, bvh, group_id, pt)
 }
 
+/// Samples color without prefiltering and backpropagates through compositing.
 pub(super) fn sample_color(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -220,6 +223,7 @@ pub(super) fn sample_color(
     Vec4::new(final_color.r, final_color.g, final_color.b, final_alpha)
 }
 
+/// Samples color with prefiltering (smoothstep coverage) and accumulates gradients.
 pub(super) fn sample_color_prefiltered(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -477,6 +481,7 @@ pub(super) fn sample_color_prefiltered(
     Vec4::new(final_color.r, final_color.g, final_color.b, final_alpha)
 }
 
+/// Tests stroke proximity and optionally updates edge hit tracking.
 fn within_distance_edge(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -507,6 +512,7 @@ fn within_distance_edge(
     hit
 }
 
+/// Tests fill coverage and updates edge hit tracking for a specific shape.
 fn is_inside_edge(
     scene: &crate::scene::Scene,
     bvh: &SceneBvh,
@@ -545,6 +551,7 @@ fn is_inside_edge(
     inside
 }
 
+/// Accumulates translation gradients into the packed translation buffer.
 fn accumulate_translation(grads: &mut SceneGrad, translation_index: Option<usize>, delta: Vec2) {
     if let Some(index) = translation_index {
         if let Some(trans) = grads.translation.as_mut() {

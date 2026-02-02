@@ -5,6 +5,9 @@ use crate::scene::{FilterType, Scene};
 
 use super::math::dot4;
 
+/// Builds a per-pixel sum of filter weights over all samples.
+///
+/// The weight image is used to normalize filtered gradients in the backward pass.
 pub(super) fn build_weight_image(
     scene: &Scene,
     samples_x: u32,
@@ -63,6 +66,7 @@ pub(super) fn build_weight_image(
     weight_image
 }
 
+/// Gathers the filtered gradient color at a point using the precomputed weights.
 pub(super) fn gather_d_color(
     filter_type: FilterType,
     radius: f32,
@@ -98,6 +102,7 @@ pub(super) fn gather_d_color(
     out
 }
 
+/// Accumulates gradients for filter parameters from a single sample point.
 pub(super) fn accumulate_filter_gradient(
     filter_type: FilterType,
     radius: f32,
@@ -150,6 +155,7 @@ pub(super) fn accumulate_filter_gradient(
     }
 }
 
+/// Evaluates the filter kernel weight for an offset in pixel space.
 fn compute_filter_weight(filter_type: FilterType, radius: f32, dx: f32, dy: f32) -> f32 {
     if radius <= 0.0 {
         return 1.0;
@@ -180,6 +186,7 @@ fn compute_filter_weight(filter_type: FilterType, radius: f32, dx: f32, dy: f32)
         }
     }
 }
+/// Backpropagates a filter weight derivative into the filter parameters.
 fn d_compute_filter_weight(
     filter_type: FilterType,
     radius: f32,
