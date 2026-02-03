@@ -46,18 +46,7 @@ pub(super) fn shape_fill_coverage(
         let dist = (len - one) * scale;
         coverage = sdf_coverage(dist, aa);
     } else if kind == SHAPE_KIND_RECT {
-        let min_x = p0;
-        let min_y = p1;
-        let max_x = p2;
-        let max_y = p3;
-        let dx = max_f32(max_f32(min_x - px, zero), px - max_x);
-        let dy = max_f32(max_f32(min_y - py, zero), py - max_y);
-        let outside = (dx * dx + dy * dy).sqrt();
-        let inside = min_f32(
-            min_f32(px - min_x, max_x - px),
-            min_f32(py - min_y, max_y - py),
-        );
-        let dist = if outside > zero { outside } else { -inside };
+        let dist = rect_signed_distance(px, py, p0, p1, p2, p3);
         coverage = sdf_coverage(dist, aa);
     } else if kind == SHAPE_KIND_PATH {
         if curve_count > 0 || seg_count > 0 {
@@ -237,18 +226,7 @@ pub(super) fn shape_stroke_coverage(
             let sdf = abs_f32(dist) - stroke_width;
             coverage = sdf_coverage(sdf, aa);
         } else if kind == SHAPE_KIND_RECT {
-            let min_x = p0;
-            let min_y = p1;
-            let max_x = p2;
-            let max_y = p3;
-            let dx = max_f32(max_f32(min_x - px, zero), px - max_x);
-            let dy = max_f32(max_f32(min_y - py, zero), py - max_y);
-            let outside = (dx * dx + dy * dy).sqrt();
-            let inside = min_f32(
-                min_f32(px - min_x, max_x - px),
-                min_f32(py - min_y, max_y - py),
-            );
-            let dist = if outside > zero { outside } else { -inside };
+            let dist = rect_signed_distance(px, py, p0, p1, p2, p3);
             let sdf = abs_f32(dist) - stroke_width;
             coverage = sdf_coverage(sdf, aa);
         } else if kind == SHAPE_KIND_PATH {

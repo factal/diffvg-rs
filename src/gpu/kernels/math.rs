@@ -42,6 +42,27 @@ pub(super) fn abs_f32(a: f32) -> f32 {
     if a < zero { -a } else { a }
 }
 
+/// Signed distance to an axis-aligned rectangle (negative inside).
+#[cube]
+pub(super) fn rect_signed_distance(
+    px: f32,
+    py: f32,
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+) -> f32 {
+    let zero = f32::new(0.0);
+    let dx = max_f32(max_f32(min_x - px, zero), px - max_x);
+    let dy = max_f32(max_f32(min_y - py, zero), py - max_y);
+    let outside = (dx * dx + dy * dy).sqrt();
+    let inside = min_f32(
+        min_f32(px - min_x, max_x - px),
+        min_f32(py - min_y, max_y - py),
+    );
+    if outside > zero { outside } else { -inside }
+}
+
 /// Clamp a value to the inclusive range [min_v, max_v].
 #[cube]
 pub(super) fn clamp_f32(v: f32, min_v: f32, max_v: f32) -> f32 {
