@@ -2,6 +2,7 @@ use crate::distance::{DistanceOptions, SceneBvh};
 use crate::grad::SceneGrad;
 use crate::math::{Vec2, Vec4};
 use crate::renderer::rng::Pcg32;
+use crate::renderer::utils::validate_backward_image_lengths;
 use crate::scene::Scene;
 use crate::{RenderError, RenderOptions};
 
@@ -41,16 +42,7 @@ pub fn render_backward(
     let width = scene.width as usize;
     let height = scene.height as usize;
     let pixel_count = width.saturating_mul(height);
-    if let Some(d_render) = d_render_image {
-        if d_render.len() != pixel_count.saturating_mul(4) {
-            return Err(RenderError::InvalidScene("d_render_image size mismatch"));
-        }
-    }
-    if let Some(d_sdf) = d_sdf_image {
-        if d_sdf.len() != pixel_count {
-            return Err(RenderError::InvalidScene("d_sdf_image size mismatch"));
-        }
-    }
+    validate_backward_image_lengths(pixel_count, d_render_image, d_sdf_image)?;
     if let Some(background) = scene.background_image.as_ref() {
         let expected_len = (scene.width as usize)
             .checked_mul(scene.height as usize)

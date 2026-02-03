@@ -10,7 +10,9 @@ use crate::gpu;
 use crate::renderer::constants::{GRADIENT_STRIDE, GROUP_STRIDE};
 use crate::renderer::prepare_backward::prepare_scene_backward;
 use crate::renderer::types::{RenderError, RenderOptions};
-use crate::renderer::utils::{ensure_nonempty, ensure_nonempty_u32};
+use crate::renderer::utils::{
+    ensure_nonempty, ensure_nonempty_u32, validate_backward_image_lengths,
+};
 use cubecl::features::TypeUsage;
 use cubecl::ir::{ElemType, FloatKind, StorageType};
 use cubecl::prelude::*;
@@ -28,16 +30,7 @@ pub(crate) fn render_backward_gpu(
     let height = scene.height as usize;
     let pixel_count = width.saturating_mul(height);
 
-    if let Some(d_render) = d_render_image {
-        if d_render.len() != pixel_count.saturating_mul(4) {
-            return Err(RenderError::InvalidScene("d_render_image size mismatch"));
-        }
-    }
-    if let Some(d_sdf) = d_sdf_image {
-        if d_sdf.len() != pixel_count {
-            return Err(RenderError::InvalidScene("d_sdf_image size mismatch"));
-        }
-    }
+    validate_backward_image_lengths(pixel_count, d_render_image, d_sdf_image)?;
 
     let include_background_image = d_render_image.is_some() && scene.background_image.is_some();
     let mut grads = SceneGrad::zeros_from_scene(
