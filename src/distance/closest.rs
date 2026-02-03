@@ -2,7 +2,7 @@
 
 use crate::math::Vec2;
 use crate::scene::{Shape, ShapeGeometry};
-use crate::path_utils::{path_point, path_point_radius};
+use crate::path_utils::path_point_radius;
 
 use super::bvh::{PathBvh, BVH_NONE};
 use super::curve::{closest_point_cubic, closest_point_quadratic, distance_to_segment};
@@ -10,7 +10,7 @@ use super::shape::{
     closest_point_circle, closest_point_ellipse, closest_point_rect, ellipse_signed_distance,
     rect_signed_distance,
 };
-use super::utils::transform_point_inverse;
+use super::utils::{path_segment_points, transform_point_inverse};
 
 /// Returns true if `pt` lies within the per-segment stroke radius of any curve in `path_bvh`.
 ///
@@ -417,92 +417,27 @@ pub(crate) fn closest_point_shape(
             let mut best_t = 0.0;
             let mut point_id = 0usize;
             for (seg_index, &num_controls) in path.num_control_points.iter().enumerate() {
-                match num_controls {
+                let Some((p0, p1, p2, p3, next_point_id)) =
+                    path_segment_points(path, point_id, total_points, num_controls)
+                else {
+                    break;
+                };
+                let (cp, t, dist) = match num_controls {
                     0 => {
-                        let i0 = point_id;
-                        let i1 = point_id + 1;
-                        let p0 = match path_point(path, i0, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p1 = match path_point(path, i1, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
                         let (dist, cp, t) = distance_to_segment(local_pt, p0, p1);
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_pt = cp;
-                            best_seg = seg_index;
-                            best_t = t;
-                        }
-                        point_id += 1;
+                        (cp, t, dist)
                     }
-                    1 => {
-                        let i0 = point_id;
-                        let i1 = point_id + 1;
-                        let i2 = point_id + 2;
-                        let p0 = match path_point(path, i0, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p1 = match path_point(path, i1, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p2 = match path_point(path, i2, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let (cp, t, dist) =
-                            closest_point_quadratic(local_pt, p0, p1, p2, path.use_distance_approx);
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_pt = cp;
-                            best_seg = seg_index;
-                            best_t = t;
-                        }
-                        point_id += 2;
-                    }
-                    2 => {
-                        let i0 = point_id;
-                        let i1 = point_id + 1;
-                        let i2 = point_id + 2;
-                        let i3 = point_id + 3;
-                        let p0 = match path_point(path, i0, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p1 = match path_point(path, i1, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p2 = match path_point(path, i2, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let p3 = match path_point(path, i3, total_points) {
-                            Some(value) => value,
-                            None => break,
-                        };
-                        let (cp, t, dist) = closest_point_cubic(
-                            local_pt,
-                            p0,
-                            p1,
-                            p2,
-                            p3,
-                            path.use_distance_approx,
-                        );
-                        if dist < best_dist {
-                            best_dist = dist;
-                            best_pt = cp;
-                            best_seg = seg_index;
-                            best_t = t;
-                        }
-                        point_id += 3;
-                    }
+                    1 => closest_point_quadratic(local_pt, p0, p1, p2, path.use_distance_approx),
+                    2 => closest_point_cubic(local_pt, p0, p1, p2, p3, path.use_distance_approx),
                     _ => break,
+                };
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_pt = cp;
+                    best_seg = seg_index;
+                    best_t = t;
                 }
+                point_id = next_point_id;
             }
             if best_dist.is_finite() {
                 let closest = shape.transform.transform_point(best_pt);
