@@ -724,16 +724,17 @@ pub(super) fn accumulate_path_fill_full(
 ) {
     let mut s = u32::new(0);
     while s < curve_count {
-        let seg_base = ((curve_offset + s) * CURVE_STRIDE) as usize;
-        let seg_kind = curve_data[seg_base] as u32;
-        let x0 = curve_data[seg_base + 1];
-        let y0 = curve_data[seg_base + 2];
-        let x1 = curve_data[seg_base + 3];
-        let y1 = curve_data[seg_base + 4];
-        let x2 = curve_data[seg_base + 5];
-        let y2 = curve_data[seg_base + 6];
-        let x3 = curve_data[seg_base + 7];
-        let y3 = curve_data[seg_base + 8];
+        let mut seg_kind = u32::new(0);
+        let mut seg_points = Line::empty(8usize);
+        load_curve_segment(curve_data, curve_offset, s, &mut seg_kind, &mut seg_points);
+        let x0 = seg_points[0];
+        let y0 = seg_points[1];
+        let x1 = seg_points[2];
+        let y1 = seg_points[3];
+        let x2 = seg_points[4];
+        let y2 = seg_points[5];
+        let x3 = seg_points[6];
+        let y3 = seg_points[7];
 
         let dist = if seg_kind == 0 {
             distance_to_segment(px, py, x0, y0, x1, y1)
@@ -902,16 +903,17 @@ pub(super) fn accumulate_path_fill_bvh(
                 let mut i = u32::new(0);
                 while i < count {
                     let seg_index = path_bvh_indices[(index_offset + start + i) as usize];
-                    let seg_base = (seg_index * CURVE_STRIDE) as usize;
-                    let seg_kind = curve_data[seg_base] as u32;
-                    let x0 = curve_data[seg_base + 1];
-                    let y0 = curve_data[seg_base + 2];
-                    let x1 = curve_data[seg_base + 3];
-                    let y1 = curve_data[seg_base + 4];
-                    let x2 = curve_data[seg_base + 5];
-                    let y2 = curve_data[seg_base + 6];
-                    let x3 = curve_data[seg_base + 7];
-                    let y3 = curve_data[seg_base + 8];
+                    let mut seg_kind = u32::new(0);
+                    let mut seg_points = Line::empty(8usize);
+                    load_curve_segment(curve_data, u32::new(0), seg_index, &mut seg_kind, &mut seg_points);
+                    let x0 = seg_points[0];
+                    let y0 = seg_points[1];
+                    let x1 = seg_points[2];
+                    let y1 = seg_points[3];
+                    let x2 = seg_points[4];
+                    let y2 = seg_points[5];
+                    let x3 = seg_points[6];
+                    let y3 = seg_points[7];
                     let seg_dist = if seg_kind == 0 {
                         distance_to_segment(px, py, x0, y0, x1, y1)
                     } else if seg_kind == 1 {
@@ -949,16 +951,17 @@ pub(super) fn accumulate_path_fill_bvh(
                 let mut i = u32::new(0);
                 while i < count {
                     let seg_index = path_bvh_indices[(index_offset + start + i) as usize];
-                    let seg_base = (seg_index * CURVE_STRIDE) as usize;
-                    let seg_kind = curve_data[seg_base] as u32;
-                    let x0 = curve_data[seg_base + 1];
-                    let y0 = curve_data[seg_base + 2];
-                    let x1 = curve_data[seg_base + 3];
-                    let y1 = curve_data[seg_base + 4];
-                    let x2 = curve_data[seg_base + 5];
-                    let y2 = curve_data[seg_base + 6];
-                    let x3 = curve_data[seg_base + 7];
-                    let y3 = curve_data[seg_base + 8];
+                    let mut seg_kind = u32::new(0);
+                    let mut seg_points = Line::empty(8usize);
+                    load_curve_segment(curve_data, u32::new(0), seg_index, &mut seg_kind, &mut seg_points);
+                    let x0 = seg_points[0];
+                    let y0 = seg_points[1];
+                    let x1 = seg_points[2];
+                    let y1 = seg_points[3];
+                    let x2 = seg_points[4];
+                    let y2 = seg_points[5];
+                    let x3 = seg_points[6];
+                    let y3 = seg_points[7];
                     if seg_kind == 0 {
                         winding_and_crossings_line(
                             px,

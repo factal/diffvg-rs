@@ -1,7 +1,30 @@
 //! Curve distance, winding, and root helpers for GPU SDF evaluation.
 
 use cubecl::prelude::*;
+use crate::gpu::constants::CURVE_STRIDE;
 use super::math::*;
+
+/// Load curve segment data (kind + control points) from packed curve storage.
+/// Writes [x0, y0, x1, y1, x2, y2, x3, y3] into `out_points`.
+#[cube]
+pub(super) fn load_curve_segment(
+    curve_data: &Array<f32>,
+    curve_offset: u32,
+    seg_index: u32,
+    out_kind: &mut u32,
+    out_points: &mut Line<f32>,
+) {
+    let seg_base = ((curve_offset + seg_index) * CURVE_STRIDE) as usize;
+    *out_kind = curve_data[seg_base] as u32;
+    out_points[0] = curve_data[seg_base + 1];
+    out_points[1] = curve_data[seg_base + 2];
+    out_points[2] = curve_data[seg_base + 3];
+    out_points[3] = curve_data[seg_base + 4];
+    out_points[4] = curve_data[seg_base + 5];
+    out_points[5] = curve_data[seg_base + 6];
+    out_points[6] = curve_data[seg_base + 7];
+    out_points[7] = curve_data[seg_base + 8];
+}
 
 /// Euclidean distance between a point and a target location.
 #[cube]
