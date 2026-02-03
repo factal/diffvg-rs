@@ -161,3 +161,37 @@ pub(super) fn pcg32_f32(x: u32) -> f32 {
     let mantissa = x >> 9;
     f32::cast_from(mantissa) * f32::new(1.0 / 8_388_608.0)
 }
+
+/// Initialize stratified jitter for a sample, returning [rx, ry].
+#[cube]
+pub(super) fn jitter_xy(
+    x: u32,
+    y: u32,
+    sx: u32,
+    sy: u32,
+    width: u32,
+    samples_x: u32,
+    samples_y: u32,
+    seed: u32,
+    jitter: u32,
+) -> Line<f32> {
+    let half = f32::new(0.5);
+    let mut out = Line::empty(2usize);
+    out[0] = half;
+    out[1] = half;
+    if jitter != u32::new(0) {
+        let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
+        let rng = pcg32_init(canonical_idx, seed);
+        let mut state_lo = rng[0];
+        let mut state_hi = rng[1];
+        let inc_lo = rng[2];
+        let inc_hi = rng[3];
+        let step0 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
+        state_lo = step0[1];
+        state_hi = step0[2];
+        out[0] = pcg32_f32(step0[0]);
+        let step1 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
+        out[1] = pcg32_f32(step1[0]);
+    }
+    out
+}

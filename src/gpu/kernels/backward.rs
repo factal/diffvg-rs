@@ -2784,23 +2784,9 @@ pub(crate) fn render_backward_color_kernel(
     let inv_sx = f32::new(1.0) / f32::cast_from(samples_x);
     let inv_sy = f32::new(1.0) / f32::cast_from(samples_y);
 
-    let half = f32::new(0.5);
-    let mut rx = half;
-    let mut ry = half;
-    if jitter != u32::new(0) {
-        let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
-        let rng = pcg32_init(canonical_idx, seed);
-        let mut state_lo = rng[0];
-        let mut state_hi = rng[1];
-        let inc_lo = rng[2];
-        let inc_hi = rng[3];
-        let step0 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        state_lo = step0[1];
-        state_hi = step0[2];
-        rx = pcg32_f32(step0[0]);
-        let step1 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        ry = pcg32_f32(step1[0]);
-    }
+    let jitter_sample = jitter_xy(x, y, sx, sy, width, samples_x, samples_y, seed, jitter);
+    let rx = jitter_sample[0];
+    let ry = jitter_sample[1];
 
     let px = f32::cast_from(x) + (f32::cast_from(sx) + rx) * inv_sx;
     let py = f32::cast_from(y) + (f32::cast_from(sy) + ry) * inv_sy;
@@ -2961,23 +2947,9 @@ pub(crate) fn render_backward_color_prefilter_kernel(
     let inv_sx = f32::new(1.0) / f32::cast_from(samples_x);
     let inv_sy = f32::new(1.0) / f32::cast_from(samples_y);
 
-    let half = f32::new(0.5);
-    let mut rx = half;
-    let mut ry = half;
-    if jitter != u32::new(0) {
-        let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
-        let rng = pcg32_init(canonical_idx, seed);
-        let mut state_lo = rng[0];
-        let mut state_hi = rng[1];
-        let inc_lo = rng[2];
-        let inc_hi = rng[3];
-        let step0 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        state_lo = step0[1];
-        state_hi = step0[2];
-        rx = pcg32_f32(step0[0]);
-        let step1 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        ry = pcg32_f32(step1[0]);
-    }
+    let jitter_sample = jitter_xy(x, y, sx, sy, width, samples_x, samples_y, seed, jitter);
+    let rx = jitter_sample[0];
+    let ry = jitter_sample[1];
 
     let px = f32::cast_from(x) + (f32::cast_from(sx) + rx) * inv_sx;
     let py = f32::cast_from(y) + (f32::cast_from(sy) + ry) * inv_sy;
@@ -3131,23 +3103,9 @@ pub(crate) fn render_backward_sdf_kernel(
     let inv_sx = f32::new(1.0) / f32::cast_from(samples_x);
     let inv_sy = f32::new(1.0) / f32::cast_from(samples_y);
 
-    let half = f32::new(0.5);
-    let mut rx = half;
-    let mut ry = half;
-    if jitter != u32::new(0) {
-        let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
-        let rng = pcg32_init(canonical_idx, seed);
-        let mut state_lo = rng[0];
-        let mut state_hi = rng[1];
-        let inc_lo = rng[2];
-        let inc_hi = rng[3];
-        let step0 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        state_lo = step0[1];
-        state_hi = step0[2];
-        rx = pcg32_f32(step0[0]);
-        let step1 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        ry = pcg32_f32(step1[0]);
-    }
+    let jitter_sample = jitter_xy(x, y, sx, sy, width, samples_x, samples_y, seed, jitter);
+    let rx = jitter_sample[0];
+    let ry = jitter_sample[1];
 
     let px = f32::cast_from(x) + (f32::cast_from(sx) + rx) * inv_sx;
     let py = f32::cast_from(y) + (f32::cast_from(sy) + ry) * inv_sy;
@@ -3291,23 +3249,9 @@ pub(crate) fn render_backward_kernel(
     let inv_sx = f32::new(1.0) / f32::cast_from(samples_x);
     let inv_sy = f32::new(1.0) / f32::cast_from(samples_y);
 
-    let half = f32::new(0.5);
-    let mut rx = half;
-    let mut ry = half;
-    if jitter != u32::new(0) {
-        let canonical_idx = ((y * width + x) * samples_y + sy) * samples_x + sx;
-        let rng = pcg32_init(canonical_idx, seed);
-        let mut state_lo = rng[0];
-        let mut state_hi = rng[1];
-        let inc_lo = rng[2];
-        let inc_hi = rng[3];
-        let step0 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        state_lo = step0[1];
-        state_hi = step0[2];
-        rx = pcg32_f32(step0[0]);
-        let step1 = pcg32_next(state_lo, state_hi, inc_lo, inc_hi);
-        ry = pcg32_f32(step1[0]);
-    }
+    let jitter_sample = jitter_xy(x, y, sx, sy, width, samples_x, samples_y, seed, jitter);
+    let rx = jitter_sample[0];
+    let ry = jitter_sample[1];
 
     let px = f32::cast_from(x) + (f32::cast_from(sx) + rx) * inv_sx;
     let py = f32::cast_from(y) + (f32::cast_from(sy) + ry) * inv_sy;
