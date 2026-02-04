@@ -22,8 +22,10 @@ use super::{
     },
 };
 
+/// Upper bound on per-pixel fragments stored during edge compositing.
 const MAX_FRAGMENTS: usize = 256;
 
+/// Transform a normal by the transpose of a 2x2 affine matrix and renormalize.
 #[cube]
 fn xform_normal_affine(m00: f32, m01: f32, m10: f32, m11: f32, nx: f32, ny: f32) -> Line<f32> {
     let x = m00 * nx + m10 * ny;
@@ -31,6 +33,7 @@ fn xform_normal_affine(m00: f32, m01: f32, m10: f32, m11: f32, nx: f32, ny: f32)
     vec2_normalize(x, y)
 }
 
+/// Sample a CDF, returning the selected index and local t in [0, 1].
 #[cube]
 fn sample_cdf(cdf: &Array<f32>, offset: u32, count: u32, u: f32, out_t: &mut f32) -> u32 {
     let mut idx = u32::new(0);
@@ -61,6 +64,7 @@ fn sample_cdf(cdf: &Array<f32>, offset: u32, count: u32, u: f32, out_t: &mut f32
     idx
 }
 
+/// Fetch a per-point stroke radius, handling open/closed paths and missing thickness data.
 #[cube]
 fn load_path_radius(
     path_thickness: &Array<f32>,
@@ -87,6 +91,9 @@ fn load_path_radius(
     }
     out
 }
+
+/// Sample a path boundary point and normal using the path CDF and stroke settings.
+/// Updates `base_point_id`, `point_id`, and `out_t` for gradient accumulation.
 #[cube]
 fn sample_boundary_path(
     path_points: &Array<f32>,
@@ -431,6 +438,9 @@ fn sample_boundary_path(
 
     out
 }
+
+/// Sample a boundary point on a shape (fill or stroke), returning local position and normal.
+/// Sets `pdf`, `is_stroke`, and path identifiers for backprop.
 #[cube]
 fn sample_boundary_point(
     shape_data: &Array<f32>,
@@ -649,6 +659,9 @@ fn sample_boundary_point(
 
     out
 }
+
+/// Composite the color at a normalized point by evaluating group fills and strokes.
+/// Sets `edge_hit` if the boundary shape contributes a visible fragment.
 #[cube]
 fn sample_color_edge(
     shape_data: &Array<f32>,
@@ -911,6 +924,8 @@ fn sample_color_edge(
 
     out
 }
+
+/// Accumulate a boundary sample contribution into shape parameters and transforms.
 #[cube]
 fn accumulate_boundary_gradient(
     shape_data: &Array<f32>,
